@@ -38,6 +38,7 @@ bool hrm_new(int ppgValue, Vector3 *acc) {
   // work out time passed since last sample (it might not be exactly hrmUpdateInterval)
   JsSysTime time = jshGetSystemTime();
   int timeDiff = (int)(jshGetMillisecondsFromTime(time-hrmInfo.lastPPGTime)+0.5);
+  hrmInfo.timeDiff = timeDiff;
   hrmInfo.lastPPGTime = time;
   // if we've just started wearing again, reset the algorithm
   if (vcInfo.isWearing && !hrmInfo.isWorn) {

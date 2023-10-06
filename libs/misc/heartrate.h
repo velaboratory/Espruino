@@ -51,6 +51,7 @@ typedef struct {
   JsSysTime lastPPGTime; // timestamp of last PPG sample
   /* last values we got from the algo. It doesn't tell us when there's a new
   value so we have to guess based on when it changes */
+  int timeDiff; // difference in time from last reading to the current reading
   int lastHRM, lastConfidence; 
   int msSinceLastHRM; // how long was it since the last HRM reading? 
   uint8_t sportMode; // The sport mode passed to the algorithm

@@ -333,7 +333,7 @@ To get this event you must turn the heart rate monitor on with
   "name" : "HRM-raw",
   "params" : [["hrm","JsVar","A object containing instant readings from the heart rate sensor"]],
   "ifdef" : "BANGLEJS",
-  "typescript" : "on(event: \"HRM-raw\", callback: (hrm: { raw: number, filt: number, bpm: number, confidence: number }) => void): void;"
+  "typescript" : "on(event: \"HRM-raw\", callback: (hrm: { raw: number, filt: number, bpm: number, confidence: number, lastPPGTime: number, timeDiff: number }) => void): void;"
 }
 Called when heart rate sensor data is available - see `Bangle.setHRMPower(1)`.
 
@@ -4319,6 +4319,8 @@ bool jswrap_banglejs_idle() {
         jsvObjectSetChildAndUnLock(o,"confidence",jsvNewFromInteger(hrmInfo.confidence));
         jsvObjectSetChildAndUnLock(o,"filt",jsvNewFromInteger(hrmInfo.filtered));
         jsvObjectSetChildAndUnLock(o,"avg",jsvNewFromInteger(hrmInfo.avg));
+        jsvObjectSetChildAndUnLock(o,"lastPPGTime",jsvNewFromInteger(hrmInfo.lastPPGTime));
+        jsvObjectSetChildAndUnLock(o,"timeDiff",jsvNewFromInteger(hrmInfo.timeDiff));
         hrm_get_hrm_raw_info(o);
         jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"HRM-raw", &o, 1);
         jsvUnLock(o);
