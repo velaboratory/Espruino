@@ -442,6 +442,7 @@ bool jsvIsStringNumericStrict(const JsVar *var);
 
 // TODO: maybe isName shouldn't include ArrayBufferName?
 bool jsvHasCharacterData(const JsVar *v); ///< does the v->data union contain character data?
+/// Does this variable use lastChild to point to a StringExt?
 bool jsvHasStringExt(const JsVar *v);
 /// Does this variable use firstChild/lastChild to point to multiple children
 bool jsvHasChildren(const JsVar *v);
@@ -662,7 +663,8 @@ void jsvAddName(JsVar *parent, JsVar *nameChild); // Add a child, which is itsel
 JsVar *jsvAddNamedChild(JsVar *parent, JsVar *value, const char *name); // Add a child, and create a name for it. Returns a LOCKED var. DOES NOT CHECK FOR DUPLICATES
 void jsvAddNamedChildAndUnLock(JsVar *parent, JsVar *value, const char *name); // Add a child, and create a name for it AND unlock the value and name. DOES NOT CHECK FOR DUPLICATES
 JsVar *jsvSetValueOfName(JsVar *name, JsVar *src); // Set the value of a child created with jsvAddName,jsvAddNamedChild. Returns the UNLOCKED name argument
-JsVar *jsvFindChildFromString(JsVar *parent, const char *name, bool createIfNotFound); // Non-recursive finding of child with name. Returns a LOCKED var
+JsVar *jsvFindChildFromString(JsVar *parent, const char *name); // Non-recursive finding of child with name. Returns a LOCKED var
+JsVar *jsvFindOrAddChildFromString(JsVar *parent, const char *name); // Non-recursive finding of child with name. Returns a LOCKED var
 JsVar *jsvFindChildFromStringI(JsVar *parent, const char *name); ///< Find a child with a matching name using a case insensitive search
 JsVar *jsvFindChildFromVar(JsVar *parent, JsVar *childName, bool addIfNotFound); ///< Non-recursive finding of child with name. Returns a LOCKED var
 

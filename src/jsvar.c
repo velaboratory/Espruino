@@ -553,11 +553,11 @@ void jsvSetCharactersInVar(JsVar *v, size_t chars) {
 
 void jsvResetVariable(JsVar *v, JsVarFlags flags) {
   assert((v->flags&JSV_VARTYPEMASK) == JSV_UNUSED);
-  // make sure we clear all data...
-  /* Force a proper zeroing of all data. We don't use
-   * memset because that'd create a function call. This
-   * should just generate a bunch of STR instructions */
-  // FIXME: this does not generate STR instructions - it's just a tight loop with STRB. We should be able to do better?
+  assert(!(flags & JSV_LOCK_MASK));
+  // make sure we clear all data and set 'flags'...
+  // Force a proper zeroing of all data. We don't use memset because that'd create a function call.
+  // This DOES NOT generate STR instructions - it's just a tight loop with STRB, but that seems faster.
+  // See below...
   unsigned int i;
   if ((sizeof(JsVar)&3) == 0) {
     for (i=0;i<sizeof(JsVar)/sizeof(uint32_t);i++)
@@ -566,9 +566,14 @@ void jsvResetVariable(JsVar *v, JsVarFlags flags) {
     for (i=0;i<sizeof(JsVar);i++)
       ((uint8_t*)v)[i] = 0;
   }
-  // set flags
-  assert(!(flags & JSV_LOCK_MASK));
   v->flags = flags | JSV_LOCK_ONE;
+  // This code really *should* be faster as it really does just
+  // create a handful of stores and the ARM assembly looks great.
+  // Somehow it's slower though!
+  //  *v = (JsVar) {
+  //  .varData = { },
+  //  .flags = flags | JSV_LOCK_ONE
+  //};
 }
 
 JsVar *jsvNewWithFlags(JsVarFlags flags) {
@@ -1346,7 +1351,7 @@ void jsvAddFunctionParameter(JsVar *fn, JsVar *paramName, JsVar *value) {
 void *jsvGetNativeFunctionPtr(const JsVar *function) {
   /* see descriptions in jsvar.h. If we have a child called JSPARSE_FUNCTION_CODE_NAME
    * then we execute code straight from that */
-  JsVar *flatString = jsvFindChildFromString((JsVar*)function, JSPARSE_FUNCTION_CODE_NAME, 0);
+  JsVar *flatString = jsvFindChildFromString((JsVar*)function, JSPARSE_FUNCTION_CODE_NAME);
   if (flatString) {
     flatString = jsvSkipNameAndUnLock(flatString);
     void *v = (void*)((size_t)function->varData.native.ptr + (char*)jsvGetFlatStringPointer(flatString));
@@ -2919,10 +2924,15 @@ JsVar *jsvSetValueOfName(JsVar *name, JsVar *src) {
   return name;
 }
 
-JsVar *jsvFindChildFromString(JsVar *parent, const char *name, bool addIfNotFound) {
+JsVar *jsvFindChildFromString(JsVar *parent, const char *name) {
   /* Pull out first 4 bytes, and ensure that everything
    * is 0 padded so that we can do a nice speedy check. */
-  char fastCheck[4];
+  char fastCheck[4] = {0,0,0,0};
+#ifdef SAVE_ON_FLASH // if saving flash, don't include this optimisation
+  const bool superFastCheck = false;
+#else
+  bool superFastCheck = true;
+#endif
   fastCheck[0] = name[0];
   if (name[0]) {
     fastCheck[1] = name[1];
@@ -2930,35 +2940,48 @@ JsVar *jsvFindChildFromString(JsVar *parent, const char *name, bool addIfNotFoun
       fastCheck[2] = name[2];
       if (name[2]) {
         fastCheck[3] = name[3];
-      } else {
-        fastCheck[3] = 0;
+#ifndef SAVE_ON_FLASH
+        if (name[3])
+          superFastCheck = name[4]==0; // 4 or less chars
+#endif
       }
-    } else {
-      fastCheck[2] = 0;
-      fastCheck[3] = 0;
     }
-  } else {
-    fastCheck[1] = 0;
-    fastCheck[2] = 0;
-    fastCheck[3] = 0;
   }
 
   assert(jsvHasChildren(parent));
   JsVarRef childref = jsvGetFirstChild(parent);
-  while (childref) {
-    // Don't Lock here, just use GetAddressOf - to try and speed up the finding
-    // TODO: We can do this now, but when/if we move to cacheing vars, it'll break
-    JsVar *child = jsvGetAddressOf(childref);
-    if (*(int*)fastCheck==*(int*)child->varData.str && // speedy check of first 4 bytes
-        jsvIsStringEqual(child, name)) {
-      // found it! unlock parent but leave child locked
-      return jsvLockAgain(child);
+  if (!superFastCheck) { // more than 4 chars so we MUST use stringequal
+    while (childref) {
+      // Don't Lock here, just use GetAddressOf - to try and speed up the finding
+      JsVar *child = jsvGetAddressOf(childref);
+      if (*(int*)fastCheck==*(int*)child->varData.str && // speedy check of first 4 bytes
+          jsvIsStringEqual(child, name)) {
+        // found it! unlock parent but leave child locked
+        return jsvLockAgain(child);
+      }
+      childref = jsvGetNextSibling(child);
     }
-    childref = jsvGetNextSibling(child);
+  } else { // 4 or less chars, so if 4 chars match, there is no StringExt + length matches, then we're good without jsvIsStringEqual
+    int charsInName = 0;
+    while (name[charsInName])
+      charsInName++;
+    while (childref) {
+      JsVar *child = jsvGetAddressOf(childref);
+      if (*(int*)fastCheck==*(int*)child->varData.str &&
+          !child->varData.ref.lastChild &&
+          jsvGetCharactersInVar(child)==charsInName) { // no extra stringexts - so it really is that small
+        // found it! unlock parent but leave child locked
+        return jsvLockAgain(child);
+      }
+      childref = jsvGetNextSibling(child);
+    }
   }
+  return 0;
+}
 
-  JsVar *child = 0;
-  if (addIfNotFound) {
+JsVar *jsvFindOrAddChildFromString(JsVar *parent, const char *name) {
+  JsVar *child = jsvFindChildFromString(parent, name);
+  if (!child) {
     child = jsvNewNameFromString(name);
     if (child) // could be out of memory
       jsvAddName(parent, child);
@@ -3116,7 +3139,8 @@ bool jsvIsChild(JsVar *parent, JsVar *child) {
 JsVar *jsvObjectGetChild(JsVar *obj, const char *name, JsVarFlags createChild) {
   if (!obj) return 0;
   assert(jsvHasChildren(obj));
-  JsVar *childName = jsvFindChildFromString(obj, name, createChild!=0);
+  JsVar *childName = createChild ? jsvFindOrAddChildFromString(obj, name) :
+                                   jsvFindChildFromString(obj, name);
   JsVar *child = jsvSkipName(childName);
   if (!child && createChild && childName!=0/*out of memory?*/) {
     child = jsvNewWithFlags(createChild);
@@ -3132,7 +3156,7 @@ JsVar *jsvObjectGetChild(JsVar *obj, const char *name, JsVarFlags createChild) {
 JsVar *jsvObjectGetChildIfExists(JsVar *obj, const char *name) {
   if (!obj) return 0;
   assert(jsvHasChildren(obj));
-  return jsvSkipNameAndUnLock(jsvFindChildFromString(obj, name, 0));
+  return jsvSkipNameAndUnLock(jsvFindChildFromString(obj, name));
 }
 
 /// Get the named child of an object using a case-insensitive search
@@ -3147,7 +3171,7 @@ JsVar *jsvObjectSetChild(JsVar *obj, const char *name, JsVar *child) {
   assert(jsvHasChildren(obj));
   if (!jsvHasChildren(obj)) return 0;
   // child can actually be a name (for instance if it is a named function)
-  JsVar *childName = jsvFindChildFromString(obj, name, true);
+  JsVar *childName = jsvFindOrAddChildFromString(obj, name);
   if (!childName) return 0; // out of memory
   jsvSetValueOfName(childName, child);
   jsvUnLock(childName);
@@ -3172,7 +3196,7 @@ void jsvObjectSetChildAndUnLock(JsVar *obj, const char *name, JsVar *child) {
 }
 
 void jsvObjectRemoveChild(JsVar *obj, const char *name) {
-  JsVar *child = jsvFindChildFromString(obj, name, false);
+  JsVar *child = jsvFindChildFromString(obj, name);
   if (child) {
     jsvRemoveChild(obj, child);
     jsvUnLock(child);
