@@ -884,7 +884,9 @@ uint32_t accumulatedJitter = 0;
 //number of samples collected
 uint32_t numSamples = 0;
 //time from last sample(collecting acc data for some amount of time)
-uint32_t lastSampleTime = 0;
+uint64_t lastSampleTime = 0;
+//time of current Sample
+uint64_t currentTime = 0;
 //difference from the last reading
 uint32_t lastAccDiff = 0;
 
@@ -1525,7 +1527,7 @@ void peripheralPollHandler() {
     accDiff = int_sqrt32(dx*dx + dy*dy + dz*dz);
     
     //collect sample and store into buffer
-    uint32_t currentTime = jshGetSystemTime();
+    currentTime = jshGetSystemTime();
     numSamples++;
     accumulatedJitter += abs(accDiff - lastAccDiff);
     accumulatedMovement += accDiff; 
@@ -1534,7 +1536,7 @@ void peripheralPollHandler() {
       JsVar *bangle = jsvObjectGetChildIfExists(execInfo.root, "Bangle");
       if(bangle){
         lastSampleTime = currentTime;
-        accelSampleData[0] = jshGetMillisecondsFromTime(currentTime);
+        accelSampleData[0] = jshGetMillisecondsFromTime(currentTime) / 1000;
         accelSampleData[1] = accumulatedMovement;
         accelSampleData[2] = numSamples;
         accelSampleData[3] = accumulatedJitter;
@@ -1545,6 +1547,7 @@ void peripheralPollHandler() {
           jsvObjectSetChildAndUnLock(o, "accelSampleData", jsvNewArrayBufferWithData(18, accelSampleData));
           jsvObjectSetChildAndUnLock(o, "accumulatedMovement", jsvNewFromInteger(accumulatedMovement));
           jsvObjectSetChildAndUnLock(o, "accumulatedJitter", jsvNewFromInteger(accumulatedJitter));
+          jsvObjectSetChildAndUnLock(o, "systemTime", jsvNewFromFloat(jshGetMillisecondsFromTime(currentTime)));
         }
         jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"accelCalc", &o, 1);
         jsvUnLock(o);
