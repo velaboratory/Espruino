@@ -1,3 +1,31 @@
+          : Graphics: Ensure floodFill sets modified area correctly
+            nRF52: Lower expected BLE XTAL accuracy to 50ppm (can improve BLE stability on some Bangle.js 2)
+            Emulator: force stack alignment of 'data' variable when accessing ArrayBuffers (fix #2463)
+            Swapped GCC version from 8.2.1 to 13.2.1 (fix #2455)
+
+     2v21 : nRF52: free up 800b more flash by removing vector table padding
+            Throw Exception when a Promise tries to resolve with another Promise (#2450)
+            Add 'lcdBufferPtr' to Bangle.getOptions
+            Allow E.nativeCall to take 32 bit floats (eg for Inline C)
+            Add built-in Stepper motor handling with the `Stepper` class (if enabled in build)
+            Fix issue requesting constructor of builtin before the class itself has been accessed (fix #2451)
+            Allow pretokenisation to store raw, unencoded Strings for speed/efficiency
+            Automatic decoding and pretokenisation of 'atob(".....")' strings
+            Pull out pretokenisation on SAVE_ON_FLASH boards (pretokenised code can be executed, it's just not tokenised in Espruino - saves 1kb)
+            Bangle.js: Fix out of bounds coordinates in LCD code that caused screen corruption on newer GCC builds (#2455)
+            Bangle.js2: In flash bootloader, don't store flash write code in RAM (no need) (fix #2458)
+            Remove 65535-char max native string length restriction introduced in 2v20 on devices that could support more like Bangle.js 2
+            E.memoryArea(0, ...) now returns `undefined`
+            Fix issue using Flat/Flash/Native Strings to create fields in objects
+            Optimise pretokenised Strings so we load very short strings direct to RAM
+            Add jsvGet...Child functions to replace common call patterns - saves 280 bytes on Pico
+            Fix issue with g.wrapString when running on flash-based strings
+            Fix lock leak when using flat/flash/native strings as object indices
+            Fix g.wrapString lockup if wrap width is less than the character width
+            Fix potential for crash after ReferenceError during function declaration (fix #2457)
+            STM32: (Original/Pico/WiFi) if USB connected but PC not receiving data, throw away USB data rather than blocking (fix #2446)
+            Move commonly used sequences of function calls into functions (eg jsvRemoveChild,jsvUnLock -> jsvRemoveChildAndUnLock) - saves ~200b
+
      2v20 : Ensure String.charCodeAt returns NaN for out of bounds chars
             Bangle.js2: When rendering overlays, *do not* use the current FG/BG color for 1 bit overlays
             nRF52 SDK15: Fix UART when >1 central link enabled
@@ -18,6 +46,35 @@
             JIT: Ensure ternary block skips 'named' variables (and references them correctly)
             Fix for UNFINISHED REGEX syntax error when parsing `true / false` (fix #2424)
             Allow `throw undefined` to still show an exception in the REPL (fix #2423)
+            When parsing function declarations, don't interpret the strings inside them
+            Bangle.js2: Fix spurious tap events when HRM enabled by changing threshold
+            Reinstate `if (0);"test"` fix after f87a53c accidentally reverted it
+            Bangle.js2: Do a soft reset every time we start the SPL06 pressure sensor (stops occasional sensor lockup)
+            Graphics: wrapString will now wrap lines on comma, dot, dash, and between images
+            Graphics: Improve PBF font loading to handle v3, plus Espruino extension to handle >10k glyphs in one file
+            Fix unicode in object accesses, eg c["\u00FC"]=42 (fix #2429)
+            Storage: Storage.writeJSON now escapes with a more compact `\x##`/`\#` character escape notation (still valid JSON)
+              This allows Espruino to save non-unicode strings with characters in the unicode range, and to also re-load them as non-unicode
+            Graphics: Graphics.stringMetrics now returns 'unrenderableChars/imageCount/maxImageHeight' for much more info about rendering strings
+            Graphics: wrapString now also wraps on slashes (to allow wrapping of URLs)
+            nRF5x: when connecting to other devices, allow a slave latency of 2 (might increase reliability)
+            Fix `Got [ERASED] expecting X` when storage compacts while executing a function *in* storage on non-Bangle devices (fix #2431)
+            JIT: Fix crashes when code got too big for simple 2-byte jump instructions (fix #2433)
+            JIT: Fixed/re-added while loops (and DO for huge loops)
+            Storage: Storage.writeJSON now skips quotes on alphanumeric field names to speed up settings read/write
+            Graphics: fix drawing image in string inside cliprect when rotated (fix #2435)
+            Bangle.js: Add wakeOnDoubleTap to Bangle.setOptions, "lock" event now has second argument giving a reason (if known)
+            nRF5x: On SDK15 ensure nonconnectable+nonscannable advertisements are not sent as extended
+            nRF52840: jsvReadVRef now reads VDDH value (not VDD, which is almost always internally regulated) 
+            Ensure we error if an unsupported byteOffset is supplied to types array constructor (fix #2439)
+            I2C: Add I2C.readReg to combine I2C.writeTo+readFrom in an easy/fast way
+            Microbit2: Set up SCK/LRCK to unused pins for neopixel to ensure neopixel will work ok
+            ESP8266/others: Fix ArrayBuffers with 12 bit JsVars (previously they overflowed)
+            Ensure E.setDST disables E.setTimeZone, and vice-versa. 
+            Added console.debug/info/warn/error as aliases of console.log
+            nRF5x: Fix INVALID_PARAM error when connecting to other BLE device when maxInterval or NRF.setLowPowerConnection specified 
+            Bangle.js2: Add 'Test' option to factory reset menu, and Bangle.showTestScreen()
+            Added Pin.pulse/pwm/analog as aliases of digitalPulse,analogWrite,analogRead
 
      2v19 : Fix Object.values/entries for numeric keys after 2v18 regression (fix #2375)
             nRF52: for SD>5 use static buffers for advertising and scan response data (#2367)

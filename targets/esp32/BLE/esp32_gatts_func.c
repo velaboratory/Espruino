@@ -104,8 +104,7 @@ void emitNRFEvent(char *event,JsVar *args,int argCnt){
   JsVar *callback = jsvSkipNameAndUnLock(jsvFindChildFromVar(nrf,eventName,0));
   jsvUnLock(eventName);
   if(callback) jsiQueueEvents(nrf,callback,args,argCnt);
-  jsvUnLock(nrf);
-  jsvUnLock(callback);
+  jsvUnLock2(nrf, callback);
   if(args) jsvUnLockMany(argCnt,args);
 }
 
@@ -457,17 +456,17 @@ void gatts_char_init(JsvObjectIterator *ble_char_it){
   gatts_char[ble_char_pos].char_uuid.len = ESP_UUID_LEN_16;
   gatts_char[ble_char_pos].char_uuid.uuid.uuid16 = ble_uuid.uuid;
   gatts_char[ble_char_pos].char_perm = 0;
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "broadcast")))
+  if (jsvObjectGetBoolChild(charVar, "broadcast"))
     gatts_char[ble_char_pos].char_property += ESP_GATT_CHAR_PROP_BIT_BROADCAST;
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "notify")))
+  if (jsvObjectGetBoolChild(charVar, "notify"))
     gatts_char[ble_char_pos].char_property += ESP_GATT_CHAR_PROP_BIT_NOTIFY;
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "indicate")))
+  if (jsvObjectGetBoolChild(charVar, "indicate"))
     gatts_char[ble_char_pos].char_property += ESP_GATT_CHAR_PROP_BIT_INDICATE;
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "readable"))){
+  if (jsvObjectGetBoolChild(charVar, "readable")){
     gatts_char[ble_char_pos].char_perm += ESP_GATT_PERM_READ;
     gatts_char[ble_char_pos].char_property += ESP_GATT_CHAR_PROP_BIT_READ;
   }
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "writable"))){
+  if (jsvObjectGetBoolChild(charVar, "writable")){
     gatts_char[ble_char_pos].char_perm += ESP_GATT_PERM_WRITE;
     gatts_char[ble_char_pos].char_property += ESP_GATT_CHAR_PROP_BIT_WRITE|ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
   }
@@ -576,8 +575,7 @@ void gatts_create_structs(bool enableUART){
         JsVar *charVar = jsvObjectIteratorGetValue(&ble_char_it);
         JsVar *charDescriptionVar = jsvObjectGetChildIfExists(charVar, "description");
         if (charDescriptionVar && jsvHasCharacterData(charDescriptionVar)) ble_descr_cnt++;
-        jsvUnLock(charDescriptionVar);
-        jsvUnLock(charVar);
+        jsvUnLock2(charDescriptionVar, charVar);
         jsvObjectIteratorNext(&ble_char_it);
         ble_char_cnt++;
       }

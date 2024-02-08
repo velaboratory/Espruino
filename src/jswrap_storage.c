@@ -160,7 +160,7 @@ created with `require("Storage").open(filename, ...)`
 JsVar *jswrap_storage_readJSON(JsVar *name, bool noExceptions) {
   JsVar *v = jsfReadFile(jsfNameFromVar(name),0,0);
   if (!v) return 0;
-  JsVar *r = jswrap_json_parse(v);
+  JsVar *r = jswrap_json_parse_ext(v, JSON_DROP_QUOTES);
   jsvUnLock(v);
   if (noExceptions) {
     jsvUnLock(jspGetException());
@@ -210,7 +210,7 @@ JsVar *jswrap_storage_readArrayBuffer(JsVar *name) {
   "params" : [
     ["name","JsVar","The filename - max 28 characters (case sensitive)"],
     ["data","JsVar","The data to write"],
-    ["offset","int","[optional] The offset within the file to write"],
+    ["offset","int","[optional] The offset within the file to write (if `0`/`undefined` a new file is created, otherwise Espruino attempts to write within an existing file if one exists)"],
     ["size","int","[optional] The size of the file (if a file is to be created that is bigger than the data)"]
   ],
   "return" : ["bool","True on success, false on failure"],
@@ -237,9 +237,12 @@ try and overwrite data that already exists**. For instance:
 
 ```
 var f = require("Storage");
-f.write("a","Hello",0,14);
-f.write("a"," ",5);
-f.write("a","World!!!",6);
+f.write("a","Hello",0,14); // Creates a new file, 14 chars long
+print(JSON.stringify(f.read("a"))); // read the file
+// any nonwritten chars will be char code 255:
+"Hello\u00FF\u00FF\u00FF\u00FF\u00FF\u00FF\u00FF\u00FF\u00FF"
+f.write("a"," ",5); // write within the file
+f.write("a","World!!!",6); // write again within the file
 print(f.read("a")); // "Hello World!!!"
 f.write("a"," ",0); // Writing to location 0 again will cause the file to be re-written
 print(f.read("a")); // " "
@@ -285,13 +288,25 @@ disappear when the device resets or power is lost.
 Simply write `require("Storage").writeJSON("MyFile", [1,2,3])` to write a new
 file, and `require("Storage").readJSON("MyFile")` to read it.
 
-This is equivalent to: `require("Storage").write(name, JSON.stringify(data))`
+This is (almost) equivalent to `require("Storage").write(name, JSON.stringify(data))` (see the notes below)
 
 **Note:** This function should be used with normal files, and not `StorageFile`s
 created with `require("Storage").open(filename, ...)`
+
+**Note:** Normally `JSON.stringify` converts any non-standard character to an escape code with `\uXXXX`, but
+as of Espruino 2v20, when writing to a file we use the most compact form, like `\xXX` or `\X`, as well as
+skipping quotes on fields. This saves space and is faster, but also means that if a String wasn't a UTF8
+string but contained characters in the UTF8 codepoint range, when saved it won't end up getting reloaded as a UTF8 string.
+It does mean that you cannot parse the file with just `JSON.parse` as it's no longer standard JSON but is JS,
+so you must use `Storage.readJSON`
 */
 bool jswrap_storage_writeJSON(JsVar *name, JsVar *data) {
-  JsVar *d = jswrap_json_stringify(data,0,0);
+  JsVar *d = jsvNewFromEmptyString();
+  if (!d) return false;
+  /* Don't call jswrap_json_stringify directly because we want to ensure we don't use JSON_JSON_COMPATIBILE, so
+  String escapes like `\xFC` stay as `\xFC` and not `\u00FC` to save space and help with unicode compatibility
+  */
+  jsfGetJSON(data, d, (JSON_DROP_QUOTES|JSON_IGNORE_FUNCTIONS|JSON_NO_UNDEFINED|JSON_ARRAYBUFFER_AS_ARRAY|JSON_JSON_COMPATIBILE) &~JSON_ALL_UNICODE_ESCAPE);
   bool r = jsfWriteFile(jsfNameFromVar(name), d, JSFF_NONE, 0, 0);
   jsvUnLock(d);
   return r;
@@ -426,7 +441,7 @@ void jswrap_storage_debug() {
   "name" : "getFree",
   "params" : [
     ["checkInternalFlash","bool","Check the internal flash (rather than external SPI flash).  Default false, so will check external storage"]
-  ],  
+  ],
   "generate" : "jswrap_storage_getFree",
   "return" : ["int","The amount of free bytes"]
 }
@@ -451,7 +466,7 @@ int jswrap_storage_getFree(bool checkInternalFlash) {
   "name" : "getStats",
   "params" : [
     ["checkInternalFlash","bool","Check the internal flash (rather than external SPI flash).  Default false, so will check external storage"]
-  ],  
+  ],
   "generate" : "jswrap_storage_getStats",
   "return" : ["JsVar","An object containing info about the current Storage system"]
 }
@@ -476,8 +491,8 @@ JsVar *jswrap_storage_getStats(bool checkInternalFlash) {
   uint32_t addr = 0;
 #ifdef FLASH_SAVED_CODE2_START
   addr = checkInternalFlash ? FLASH_SAVED_CODE_START : FLASH_SAVED_CODE2_START;
-  
-#endif  
+
+#endif
   JsfStorageStats stats = jsfGetStorageStats(addr, true);
   jsvObjectSetChildAndUnLock(o, "totalBytes", jsvNewFromInteger((JsVarInt)stats.total));
   jsvObjectSetChildAndUnLock(o, "freeBytes", jsvNewFromInteger((JsVarInt)stats.free));
@@ -663,13 +678,13 @@ to detect the end of a file. As such you should not write character code 255
 
 JsVar *jswrap_storagefile_read_internal(JsVar *f, int len) {
   bool isReadLine = len<0;
-  char mode = (char)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"mode"));
+  char mode = (char)jsvObjectGetIntegerChild(f,"mode");
   if (mode!='r') {
     jsExceptionHere(JSET_ERROR, "Can't read in this mode");
     return 0;
   }
 
-  int chunk = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"chunk"));
+  int chunk = jsvObjectGetIntegerChild(f,"chunk");
   JsfFileName fname = jsfNameFromVarAndUnLock(jsvObjectGetChildIfExists(f,"name"));
   int fnamei = sizeof(fname)-1;
   while (fnamei && fname.c[fnamei-1]==0) fnamei--;
@@ -678,7 +693,7 @@ JsVar *jswrap_storagefile_read_internal(JsVar *f, int len) {
   uint32_t addr = jsfFindFile(fname, &header);
   if (!addr) return 0; // end of file/no file chunk found
   int fileLen = (int)jsfGetFileSize(&header);
-  int offset = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"offset"));
+  int offset = jsvObjectGetIntegerChild(f,"offset");
 
   JsVar *result = 0;
   char buf[32];
@@ -853,7 +868,7 @@ Append the given data to a file. You should not attempt to append `"\xFF"`
 (character code 255).
 */
 void jswrap_storagefile_write(JsVar *f, JsVar *_data) {
-  char mode = (char)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"mode"));
+  char mode = (char)jsvObjectGetIntegerChild(f,"mode");
   if (mode!='w' && mode!='a') {
     jsExceptionHere(JSET_ERROR, "Can't write in this mode");
     return;
@@ -866,8 +881,8 @@ void jswrap_storagefile_write(JsVar *f, JsVar *_data) {
     jsvUnLock(data);
     return;
   }
-  int offset = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"offset"));
-  int chunk = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(f,"chunk"));
+  int offset = jsvObjectGetIntegerChild(f,"offset");
+  int chunk = jsvObjectGetIntegerChild(f,"chunk");
   JsfFileName fname = jsfNameFromVarAndUnLock(jsvObjectGetChildIfExists(f,"name"));
   int fnamei = sizeof(fname)-1;
   while (fnamei && fname.c[fnamei-1]==0) fnamei--;

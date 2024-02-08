@@ -119,10 +119,15 @@ _LEX_R_LIST_END = LEX_R_OF, /* always the last entry for symbols */
 
 _LEX_OPERATOR2_START = _LEX_R_LIST_END+10, // padding for adding new symbols in the future!
     LEX_NULLISH = _LEX_OPERATOR2_START,
+    LEX_RAW_STRING8, //< a pretokenised string stored as 0xD1,length,raw_binary_data
+    LEX_RAW_STRING16, //< a pretokenised string stored as 0xD2,length_lo,length_hi,raw_binary_data
 _LEX_OPERATOR2_END = LEX_NULLISH,
 
 _LEX_TOKENS_END = _LEX_OPERATOR2_END, /* always the last entry for symbols */
 } LEX_TYPES;
+
+// Is the supplied token an ID that is a JS reserved word
+#define LEX_IS_RESERVED_WORD(tk) (tk >= _LEX_R_LIST_START && tk <= _LEX_R_LIST_END)
 
 
 typedef struct JslCharPos {
@@ -187,7 +192,7 @@ void jslFunctionCharAsString(unsigned char ch, char *str, size_t len);
 void jslTokenAsString(int token, char *str, size_t len); ///< output the given token as a string - for debugging
 void jslGetTokenString(char *str, size_t len);
 char *jslGetTokenValueAsString();
-int jslGetTokenLength();
+size_t jslGetTokenLength();
 JsVar *jslGetTokenValueAsVar();
 bool jslIsIDOrReservedWord();
 
@@ -200,8 +205,10 @@ void jslGetNextToken(); ///< Get the text token from our text string
 /// Create a new STRING from part of the lexer
 JsVar *jslNewStringFromLexer(JslCharPos *charFrom, size_t charTo);
 
+#ifndef ESPR_NO_PRETOKENISE
 /// Create a new STRING from part of the lexer - keywords get tokenised
 JsVar *jslNewTokenisedStringFromLexer(JslCharPos *charFrom, size_t charTo);
+#endif
 
 /// Return the line number at the current character position (this isn't fast as it searches the string)
 unsigned int jslGetLineNumber();

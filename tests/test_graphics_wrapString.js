@@ -19,7 +19,8 @@ function SHOULD_BE(b,a) {
   var ta = E.toJS(a);
   var tb = E.toJS(b);
   if (ta!=tb) {
-    console.log("GOT :"+tb+"\nSHOULD BE:"+ta);
+    console.log("GOT      :"+tb);
+    console.log("SHOULD BE:"+ta);
     console.log("================");
     b.forEach(l=>console.log(E.toJS(l), g.stringWidth(l)));
     console.log("================");
@@ -39,6 +40,11 @@ g.clear().setFont("4x6");
 lines = g.wrapString("X", 10);
 SHOULD_BE(lines, ["X"]);
 
+// wrapping when the area is too small to show even one char
+g.clear().setFont("4x6");
+lines = g.wrapString("XYZ", 2);
+SHOULD_BE(lines, ["X","Y","Z"]);
+
 // wrap a long word to multiple lines
 g.clear().setFont("4x6");
 lines = g.wrapString("ABCDEFGHIJ", 10);
@@ -48,6 +54,15 @@ SHOULD_BE(lines, ["AB","CD","EF","GH","IJ"]);
 g.clear().setFont("4x6");
 lines = g.wrapString("A very LongWord is not here", 30);
 SHOULD_BE(lines, ["A very","LongWor","d is","not","here"]);
+
+// don't wrap on commas if long enough
+g.clear().setFont("4x6");
+lines = g.wrapString("Hello,world", 100);
+SHOULD_BE(lines, ["Hello,world"]);
+// wrap on commas
+g.clear().setFont("4x6");
+lines = g.wrapString("Hello,world", 30);
+SHOULD_BE(lines, ["Hello,","world"]);
 
 // normal wrap
 g.clear().setFont("4x6");
@@ -87,8 +102,23 @@ g.clear().setFont("4x6");
 lines = g.wrapString("\0\x12\x12\x81\0\x7F\xFF\xBF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\x7F\xFF\x1F\xFF\x8F\xFF\xC7\xF9\xE3\xFE1\xFF\xC0\xFF\xF8\x7F\xFF?\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xDF\xFF\xE0",1000)
 SHOULD_BE(lines, ["\0\x12\x12\x81\0\x7F\xFF\xBF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE\x7F\xFF\x1F\xFF\x8F\xFF\xC7\xF9\xE3\xFE1\xFF\xC0\xFF\xF8\x7F\xFF?\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xDF\xFF\xE0"]);
 
+// 4x 8x8 bitmaps - should be split on lines
+g.clear().setFont("4x6");
+lines = g.wrapString("\0\x08\x08\1\1\2\3\4\5\6\7\8\0\x08\x08\1\1\2\3\4\5\6\7\8\0\x08\x08\1\1\2\3\4\5\6\7\8\0\x08\x08\1\1\2\3\4\5\6\7\8",12)
+SHOULD_BE(lines, ["\0\x08\x08\1\1\2\3\4\5\6\7\8","\0\x08\x08\1\1\2\3\4\5\6\7\8","\0\x08\x08\1\1\2\3\4\5\6\7\8","\0\x08\x08\1\1\2\3\4\5\6\7\8"]);
+
 // UTF8 chars - no wrapping expected
 g.clear().setFont("4x6");
 lines = g.wrapString("F\u00F6n K\u00FCr B\u00E4r", 200);
 SHOULD_BE(lines, ["F\u00F6n K\u00FCr B\u00E4r"]);
+
+// Using wrapstring from Storage
+require("Storage").write("x","Compacting...\nTakes approx\n1 minute")
+lines = g.wrapString(require("Storage").read("x"), 176)
+require("Storage").erase("x")
+SHOULD_BE(lines, ["Compacting...","Takes approx","1 minute"]);
+
+
+
+
 result = ok;

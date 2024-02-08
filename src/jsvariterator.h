@@ -80,6 +80,9 @@ void jsvStringIteratorNew(JsvStringIterator *it, JsVar *str, size_t startIdx);
 /// Create a new String iterator from a string, starting from a specific character (ensures start character matches with actual UTF8 char number)
 void jsvStringIteratorNewUTF8(JsvStringIterator *it, JsVar *str, size_t startIdx);
 
+/// Update the pointer on a String iterator (should not normally be needed except when allocating a new iterator, but we may call it if we think the pointer in the var may have changed, eg during compaction)
+void jsvStringIteratorUpdatePtr(JsvStringIterator *it);
+
 /// Clone the string iterator
 void jsvStringIteratorClone(JsvStringIterator *dstit, JsvStringIterator *it);
 
@@ -257,11 +260,11 @@ void jsvArrayBufferIteratorClone(JsvArrayBufferIterator *dstit, JsvArrayBufferIt
 /** ArrayBuffers have the slightly odd side-effect that you can't write an element
  * once you have read it. That's why we have jsvArrayBufferIteratorGetValueAndRewind
  * which allows this, but is slower. */
-JsVar *jsvArrayBufferIteratorGetValue(JsvArrayBufferIterator *it);
+JsVar *jsvArrayBufferIteratorGetValue(JsvArrayBufferIterator *it, bool bigEndian);
 JsVar *jsvArrayBufferIteratorGetValueAndRewind(JsvArrayBufferIterator *it);
 JsVarInt jsvArrayBufferIteratorGetIntegerValue(JsvArrayBufferIterator *it);
 JsVarFloat jsvArrayBufferIteratorGetFloatValue(JsvArrayBufferIterator *it);
-void   jsvArrayBufferIteratorSetValue(JsvArrayBufferIterator *it, JsVar *value);
+void   jsvArrayBufferIteratorSetValue(JsvArrayBufferIterator *it, JsVar *value, bool bigEndian);
 void   jsvArrayBufferIteratorSetValueAndRewind(JsvArrayBufferIterator *it, JsVar *value);
 void   jsvArrayBufferIteratorSetIntegerValue(JsvArrayBufferIterator *it, JsVarInt value);
 void   jsvArrayBufferIteratorSetByteValue(JsvArrayBufferIterator *it, char c); ///< special case for when we know we're writing to a byte array

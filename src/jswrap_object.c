@@ -1032,8 +1032,7 @@ void jswrap_object_removeListener(JsVar *parent, JsVar *event, JsVar *callback) 
         // it's an array, search for the index
         JsVar *idx = jsvGetIndexOf(eventList, callback, true);
         if (idx) {
-          jsvRemoveChild(eventList, idx);
-          jsvUnLock(idx);
+          jsvRemoveChildAndUnLock(eventList, idx);
         }
       }
       jsvUnLock(eventList);
@@ -1078,8 +1077,7 @@ void jswrap_object_removeAllListeners(JsVar *parent, JsVar *event) {
     JsVar *eventList = jsvFindChildFromVar(parent, eventName, true);
     jsvUnLock(eventName);
     if (eventList) {
-      jsvRemoveChild(parent, eventList);
-      jsvUnLock(eventList);
+      jsvRemoveChildAndUnLock(parent, eventList);
     }
   } else if (jsvIsUndefined(event)) {
     // Eep. We must remove everything beginning with '#on' (JS_EVENT_PREFIX)
@@ -1170,7 +1168,7 @@ void jswrap_function_replaceWith(JsVar *oldFunc, JsVar *newFunc) {
         // don't copy function code - just use it as-is. But we do have to
         // make a new NAME for it!
         JsVar *fnCode = jsvSkipName(el);
-        copy = jsvMakeIntoVariableName(jsvNewFromStringVar(el,  0, JSVAPPENDSTRINGVAR_MAXLENGTH), fnCode);
+        copy = jsvMakeIntoVariableName(jsvNewFromStringVarComplete(el), fnCode);
         jsvUnLock(fnCode);
       } else
         copy = jsvCopy(el, true);

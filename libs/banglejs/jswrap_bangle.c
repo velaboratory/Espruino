@@ -31,6 +31,7 @@
 #include "jswrap_heatshrink.h"
 #include "jswrap_espruino.h"
 #include "jswrap_terminal.h"
+#include "jswrap_error.h"
 #include "jsflash.h"
 #include "graphics.h"
 #include "bitmap_font_6x8.h"
@@ -354,14 +355,14 @@ Called when heart rate sensor data is available - see `Bangle.setHRMPower(1)`.
   "type" : "event",
   "class" : "Bangle",
   "name" : "HRM-env",
-  "params" : [["env","JsVar","An integer containing current environment reading"]],
+  "params" : [["env","JsVar","An integer containing current environment reading (light level)"]],
   "ifdef" : "BANGLEJS2"
 }
-Called when an environment sample heart rate sensor data is available. On the newest VC31B based watches this is only 4 bit (0..15)
+Called when an environment sample heart rate sensor data is available (this is the amount of light received by the HRM sensor from the environment when its LED is off). On the newest VC31B based watches this is only 4 bit (0..15).
 
 To get it you need to turn the HRM on with `Bangle.setHRMPower(1)` and also set `Bangle.setOptions({hrmPushEnv:true})`.
 
-It is also possible to poke registers with `Bangle.hrmWr` to increase the poll rate if needed.
+It is also possible to poke registers with `Bangle.hrmWr` to increase the poll rate if needed. See https://banglejs.com/apps/?id=flashcount for an example of this.
 
  */
 /*TYPESCRIPT
@@ -408,7 +409,10 @@ longer useful if want to see in sun screen only. Also see `Bangle.isBacklightOn(
   "type" : "event",
   "class" : "Bangle",
   "name" : "lock",
-  "params" : [["on","bool","`true` if screen is locked, `false` if it is unlocked and touchscreen/buttons will work"]],
+  "params" : [
+    ["on","bool","`true` if screen is locked, `false` if it is unlocked and touchscreen/buttons will work"],
+    ["reason","string","(2v20 onwards) If known, the reason for locking/unlocking - 'button','js','tap','doubleTap','faceUp','twist','timeout'"]
+    ],
   "ifdef" : "BANGLEJS"
 }
 Has the screen been locked? Also see `Bangle.isLocked()`
@@ -736,7 +740,8 @@ int barometerDP[9]; // pressure calibration
 #endif
 
 /// Promise when pressure is requested
-JsVar *promisePressure;
+JsVar *promisePressure; // return promise of getPressure() - when set, the next pressure reading will complete this promise
+volatile uint16_t barometerOnTimer; // how long has the barometer been on?
 double barometerPressure;
 double barometerTemperature;
 double barometerAltitude;
@@ -946,20 +951,21 @@ typedef enum {
   JSBF_WAKEON_BTN2   = 1<<2,
   JSBF_WAKEON_BTN3   = 1<<3,
   JSBF_WAKEON_TOUCH  = 1<<4,
-  JSBF_WAKEON_TWIST  = 1<<5,
-  JSBF_BEEP_VIBRATE  = 1<<6, // use vibration motor for beep
-  JSBF_ENABLE_BEEP   = 1<<7,
-  JSBF_ENABLE_BUZZ   = 1<<8,
-  JSBF_ACCEL_LISTENER = 1<<9, ///< we have a listener for accelerometer data
-  JSBF_POWER_SAVE    = 1<<10, ///< if no movement detected for a while, lower the accelerometer poll interval
-  JSBF_HRM_ON        = 1<<11,
-  JSBF_GPS_ON        = 1<<12,
-  JSBF_COMPASS_ON    = 1<<13,
-  JSBF_BAROMETER_ON  = 1<<14,
-  JSBF_LCD_ON        = 1<<15,
-  JSBF_LCD_BL_ON     = 1<<16,
-  JSBF_LOCKED        = 1<<17,
-  JSBF_HRM_INSTANT_LISTENER = 1<<18,
+  JSBF_WAKEON_DBLTAP = 1<<5,
+  JSBF_WAKEON_TWIST  = 1<<6,
+  JSBF_BEEP_VIBRATE  = 1<<7, // use vibration motor for beep
+  JSBF_ENABLE_BEEP   = 1<<8,
+  JSBF_ENABLE_BUZZ   = 1<<9,
+  JSBF_ACCEL_LISTENER = 1<<10, ///< we have a listener for accelerometer data
+  JSBF_POWER_SAVE    = 1<<11, ///< if no movement detected for a while, lower the accelerometer poll interval
+  JSBF_HRM_ON        = 1<<12,
+  JSBF_GPS_ON        = 1<<13,
+  JSBF_COMPASS_ON    = 1<<14,
+  JSBF_BAROMETER_ON  = 1<<15,
+  JSBF_LCD_ON        = 1<<16,
+  JSBF_LCD_BL_ON     = 1<<17,
+  JSBF_LOCKED        = 1<<18,
+  JSBF_HRM_INSTANT_LISTENER = 1<<19,
 
   JSBF_DEFAULT = ///< default at power-on
       JSBF_WAKEON_TWIST|
@@ -1013,6 +1019,9 @@ typedef enum {
 } JsBangleTasks;
 JsBangleTasks bangleTasks;
 
+const char *lockReason = 0; ///< If JSBT_LOCK/UNLOCK is set, this is the reason (if known) - should point to a constant string (not on stack!)
+void _jswrap_banglejs_setLocked(bool isLocked, const char *reason);
+
 void jswrap_banglejs_pwrGPS(bool on) {
   if (on) bangleFlags |= JSBF_GPS_ON;
   else bangleFlags &= ~JSBF_GPS_ON;
@@ -1058,8 +1067,6 @@ void jswrap_banglejs_pwrBacklight(bool on) {
 #endif
 }
 
-
-
 void graphicsInternalFlip() {
 #ifdef LCD_CONTROLLER_LPM013M126
   lcdMemLCD_flip(&graphicsInternal);
@@ -1088,6 +1095,29 @@ void lcd_flip(JsVar *parent, bool all) {
 /// Clear the given health state back to defaults
 static void healthStateClear(HealthState *health) {
   memset(health, 0, sizeof(HealthState));
+}
+
+// Called when the Bangle should be woken up. Returns true if we did wake up (event was handled)
+bool wakeUpBangle(const char *reason) {
+  bool woke = false;
+  if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
+    woke = true;
+    bangleTasks |= JSBT_LCD_ON;
+  }
+  if (backlightTimeout && !(bangleFlags&JSBF_LCD_BL_ON)) {
+    woke = true;
+    bangleTasks |= JSBT_LCD_BL_ON;
+  }
+  if (lockTimeout && bangleFlags&JSBF_LOCKED) {
+    woke = true;
+    lockReason = reason;
+    bangleTasks |= JSBT_UNLOCK;
+  }
+  if (woke) {
+    inactivityTimer = 0;
+    jshHadEvent();
+  }
+  return woke;
 }
 
 /** This is called to set whether an app requests a device to be on or off.
@@ -1237,6 +1267,7 @@ void peripheralPollHandler() {
   if (lockTimeout && !(bangleFlags&JSBF_LOCKED) && inactivityTimer>=lockTimeout) {
     // 10 seconds of inactivity, lock display
     bangleTasks |= JSBT_LOCK;
+    lockReason = "timeout";
     jshHadEvent();
   }
 
@@ -1372,26 +1403,14 @@ void peripheralPollHandler() {
     tapInfo = buf[0] | (tapType<<6);
   }
   if (tapType) {
-
     // wake on tap, for front (for Bangle.js 2)
 #ifdef BANGLEJS_Q3
-    if ((bangleFlags&JSBF_WAKEON_TOUCH) && (tapInfo&2)) {
-      bool woke = false;
-      if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
-        woke = true;
-        bangleTasks |= JSBT_LCD_ON;
-      }
-      if (backlightTimeout && !(bangleFlags&JSBF_LCD_BL_ON)) {
-        woke = true;
-        bangleTasks |= JSBT_LCD_BL_ON;
-      }
-      if (lockTimeout && bangleFlags&JSBF_LOCKED) {
-        woke = true;
-        bangleTasks |= JSBT_UNLOCK;
-      }
-      if (woke) inactivityTimer = 0;
-    }
+    if ((bangleFlags&JSBF_WAKEON_TOUCH) && (tapInfo&2)/*front*/)
+      wakeUpBangle("tap");
 #endif
+    // double tap
+    if ((bangleFlags&JSBF_WAKEON_DBLTAP) && (tapInfo&2)/*front*/ && (tapInfo&0x80)/*double-tap*/)
+      wakeUpBangle("doubleTap");
 
     // tap ignores lock
     bangleTasks |= JSBT_ACCEL_TAPPED;
@@ -1425,19 +1444,8 @@ void peripheralPollHandler() {
     bool handled = false;
     // wake on tap, for front (for Dickens)
 #ifdef DICKENS
-    if ((bangleFlags&JSBF_WAKEON_TOUCH) && (tapInfo&1)) {
-      if (!(bangleFlags&JSBF_LCD_ON)) {
-        bangleTasks |= JSBT_LCD_ON;
-        handled = true;
-      }
-      if (!(bangleFlags&JSBF_LCD_BL_ON)) {
-        bangleTasks |= JSBT_LCD_BL_ON;
-        handled = true;
-      }
-      if (bangleFlags&JSBF_LOCKED) {
-        bangleTasks |= JSBT_UNLOCK;
-        handled = true;
-      }
+    if ((bangleFlags&JSBF_WAKEON_TOUCH) && (tapInfo&1))
+      handled = wakeUpBangle("tap");
     }
 #endif
     if (!handled)
@@ -1555,21 +1563,8 @@ void peripheralPollHandler() {
     if (faceUpTimer>=300 && !faceUpSent) {
       // bypass lock. wake does not consume. do not extend wake
       if (faceUp && (bangleFlags&JSBF_WAKEON_FACEUP)) {
-        bool woke = false;
         // LCD was turned off, turn it back on
-        if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
-          woke = true;
-          bangleTasks |= JSBT_LCD_ON;
-        }
-        if (backlightTimeout && !(bangleFlags&JSBF_LCD_BL_ON)) {
-          woke = true;
-          bangleTasks |= JSBT_LCD_BL_ON;
-        }
-        if (lockTimeout && (bangleFlags&JSBF_LOCKED)) {
-          woke = true;
-          bangleTasks |= JSBT_UNLOCK;
-        }
-        if (woke) inactivityTimer = 0;
+        wakeUpBangle("faceUp");
       }
       faceUpSent = true;
       bangleTasks |= JSBT_FACE_UP;
@@ -1609,20 +1604,7 @@ void peripheralPollHandler() {
       jshHadEvent();
 
       if (bangleFlags&JSBF_WAKEON_TWIST) {
-        bool woke = false;
-        if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
-          woke = true;
-          bangleTasks |= JSBT_LCD_ON;
-        }
-        if (backlightTimeout && !(bangleFlags&JSBF_LCD_BL_ON)) {
-           woke = true;
-          bangleTasks |= JSBT_LCD_BL_ON;
-        }
-        if (lockTimeout && bangleFlags&JSBF_LOCKED) {
-           woke = true;
-          bangleTasks |= JSBT_UNLOCK;
-        }
-        if (woke) inactivityTimer = 0;
+        wakeUpBangle("twist");
       }
     }
 
@@ -1746,19 +1728,7 @@ void btnHandlerCommon(int button, bool state, IOEventFlags flags) {
         false){ // wake-bind-input
       // if a 'hard' button, turn LCD on
       if (state) {
-        bool ignoreBtnUp = false;
-        if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
-          bangleTasks |= JSBT_LCD_ON;
-          ignoreBtnUp = true;
-        }
-        if (backlightTimeout && !(bangleFlags&JSBF_LCD_BL_ON)) {
-          bangleTasks |= JSBT_LCD_BL_ON;
-          ignoreBtnUp = true;
-        }
-        if (lockTimeout && (bangleFlags&JSBF_LOCKED)) {
-          bangleTasks |= JSBT_UNLOCK;
-          ignoreBtnUp = true;
-        }
+        bool ignoreBtnUp = wakeUpBangle("button");
         if (ignoreBtnUp) {
           inactivityTimer = 0;
           // This allows us to ignore subsequent button
@@ -1802,19 +1772,8 @@ void btnHandlerCommon(int button, bool state, IOEventFlags flags) {
 // returns true if handled and shouldn't create a normal watch event
 bool btnTouchHandler() {
   if (bangleFlags&JSBF_WAKEON_TOUCH) {
-    bool eventUsed = false;
-    if (lcdPowerTimeout && !(bangleFlags&JSBF_LCD_ON)) {
-      bangleTasks |= JSBT_LCD_ON;
-      eventUsed = true; // eat the event
-    }
-    if (lockTimeout && bangleFlags&JSBF_LOCKED) {
-      bangleTasks |= JSBT_UNLOCK;
-      eventUsed = true;
-    }
-    if (eventUsed) {
-      inactivityTimer = 0;
+    if (wakeUpBangle("touch"))
       return true; // eat the event
-    }
   }
   // if locked, ignore touch/swipe
   if (bangleFlags&JSBF_LOCKED) {
@@ -2104,7 +2063,7 @@ void jswrap_banglejs_setLCDPowerBacklight(bool isOn) {
   }
   else {
     // ensure screen locks if programatically switch off
-    if (lockTimeout > 0 && lockTimeout <= backlightTimeout) jswrap_banglejs_setLocked(true);
+    if (lockTimeout > 0 && lockTimeout <= backlightTimeout) _jswrap_banglejs_setLocked(true, "backlight");
     bangleFlags &= ~JSBF_LCD_BL_ON;
   }
 #ifndef EMULATED
@@ -2195,7 +2154,7 @@ void jswrap_banglejs_setLCDPower(bool isOn) {
   else {
     bangleFlags &= ~JSBF_LCD_ON;
     // ensure screen locks if programatically switch off
-    if (lockTimeout > 0 && lockTimeout <= lcdPowerTimeout) jswrap_banglejs_setLocked(true);
+    if (lockTimeout > 0 && lockTimeout <= lcdPowerTimeout) _jswrap_banglejs_setLocked(true, "lcd");
   }
 }
 
@@ -2543,6 +2502,7 @@ type BangleOptions<Boolean = boolean> = {
   wakeOnBTN3: Boolean;
   wakeOnFaceUp: Boolean;
   wakeOnTouch: Boolean;
+  wakeOnDoubleTap: Boolean;
   wakeOnTwist: Boolean;
   twistThreshold: number;
   twistMaxY: number;
@@ -2578,8 +2538,11 @@ Set internal options used for gestures, etc...
   default = `true`
 * `wakeOnFaceUp` should the LCD turn on when the watch is turned face up?
   default = `false`
-* `wakeOnTouch` should the LCD turn on when the touchscreen is pressed? default
-  = `false`
+* `wakeOnTouch` should the LCD turn on when the touchscreen is pressed? On Bangle.js 1 this
+is a physical press on the touchscreen, on Bangle.js 2 we have to use the accelerometer as
+the touchscreen cannot be left powered without running the battery down. default = `false`
+* `wakeOnDoubleTap` (2v20 onwards) should the LCD turn on when the watch is double-tapped on the screen?
+This uses the accelerometer, not the touchscreen itself. default = `false`
 * `wakeOnTwist` should the LCD turn on when the watch is twisted? default =
   `true`
 * `twistThreshold` How much acceleration to register a twist of the watch strap?
@@ -2615,15 +2578,17 @@ for before the clock is reloaded? 1500ms default, or 0 means never.
   heart rate monitor. On Bangle.js 2 only 10,20,40,80,160,200 ms are supported,
   and polling rate may not be exact. The algorithm's filtering is tuned for
   20-40ms poll intervals, so higher/lower intervals may effect the reliability
-  of the BPM reading.
+  of the BPM reading. You must call this *before* `Bangle.setHRMPower` - calling
+  when the HRM is already on will not affect the poll rate.
 * `hrmSportMode` - on the newest Bangle.js 2 builds with with the proprietary
   heart rate algorithm, this is the sport mode passed to the algorithm. See `libs/misc/vc31_binary/algo.h`
   for more info. -1 = auto, 0 = normal (default), 1 = running, 2 = ...
-* `hrmGreenAdjust` - (Bangle.js 2, 2v19+) if false (default is true) the green LED intensity won't be adjusted to get the HRM sensor 'exposure' correct
-* `hrmWearDetect` - (Bangle.js 2, 2v19+) if false (default is true) HRM readings won't be turned off if the watch isn't on your arm (based on HRM proximity sensor)
-* `hrmPushEnv` - (Bangle.js 2, 2v19+) if true (default is false) HRM environment readings will be produced as `Bangle.on(`HRM-env`, ...)` events
+* `hrmGreenAdjust` - (Bangle.js 2, 2v19+) if false (default is true) the green LED intensity won't be adjusted to get the HRM sensor 'exposure' correct. This is reset when the HRM is initialised with `Bangle.setHRMPower`.
+* `hrmWearDetect` - (Bangle.js 2, 2v19+) if false (default is true) HRM readings won't be turned off if the watch isn't on your arm (based on HRM proximity sensor). This is reset when the HRM is initialised with `Bangle.setHRMPower`.
+* `hrmPushEnv` - (Bangle.js 2, 2v19+) if true (default is false) HRM environment readings will be produced as `Bangle.on(`HRM-env`, ...)` events. This is reset when the HRM is initialised with `Bangle.setHRMPower`.
 * `seaLevelPressure` (Bangle.js 2) Normally 1013.25 millibars - this is used for
   calculating altitude with the pressure sensor
+* `lcdBufferPtr` (Bangle.js 2 2v21+) Return a pointer to the first pixel of the 3 bit graphics buffer used by Bangle.js for the screen (stride = 178 bytes)
 
 Where accelerations are used they are in internal units, where `8192 = 1g`
 
@@ -2634,6 +2599,7 @@ JsVar * _jswrap_banglejs_setOptions(JsVar *options, bool createObject) {
   bool wakeOnBTN3 = bangleFlags&JSBF_WAKEON_BTN3;
   bool wakeOnFaceUp = bangleFlags&JSBF_WAKEON_FACEUP;
   bool wakeOnTouch = bangleFlags&JSBF_WAKEON_TOUCH;
+  bool wakeOnDoubleTap = bangleFlags&JSBF_WAKEON_DBLTAP;
   bool wakeOnTwist = bangleFlags&JSBF_WAKEON_TWIST;
   bool powerSave = bangleFlags&JSBF_POWER_SAVE;
   int stepCounterThresholdLow, stepCounterThresholdHigh; // ignore these with new step counter
@@ -2650,6 +2616,9 @@ JsVar * _jswrap_banglejs_setOptions(JsVar *options, bool createObject) {
   int touchY1 = touchMinY;
   int touchX2 = touchMaxX;
   int touchY2 = touchMaxY;
+#endif
+#ifdef LCD_CONTROLLER_LPM013M126
+  int lcdBufferPtr = (int)(size_t)lcdMemLCD_getRowPtr(0);
 #endif
   jsvConfigObject configs[] = {
 #ifdef HEARTRATE
@@ -2680,6 +2649,7 @@ JsVar * _jswrap_banglejs_setOptions(JsVar *options, bool createObject) {
       {"wakeOnBTN3", JSV_BOOLEAN, &wakeOnBTN3},
       {"wakeOnFaceUp", JSV_BOOLEAN, &wakeOnFaceUp},
       {"wakeOnTouch", JSV_BOOLEAN, &wakeOnTouch},
+      {"wakeOnDoubleTap", JSV_BOOLEAN, &wakeOnDoubleTap},
       {"wakeOnTwist", JSV_BOOLEAN, &wakeOnTwist},
       {"powerSave", JSV_BOOLEAN, &powerSave},
       {"lockTimeout", JSV_INTEGER, &lockTimeout},
@@ -2692,6 +2662,9 @@ JsVar * _jswrap_banglejs_setOptions(JsVar *options, bool createObject) {
       {"touchX2", JSV_INTEGER, &touchX2},
       {"touchY2", JSV_INTEGER, &touchY2},
 #endif
+#ifdef LCD_CONTROLLER_LPM013M126
+      {"lcdBufferPtr", JSV_INTEGER, &lcdBufferPtr},
+#endif
   };
   if (createObject) {
     return jsvCreateConfigObject(configs, sizeof(configs) / sizeof(jsvConfigObject));
@@ -2702,6 +2675,7 @@ JsVar * _jswrap_banglejs_setOptions(JsVar *options, bool createObject) {
     bangleFlags = (bangleFlags&~JSBF_WAKEON_BTN3) | (wakeOnBTN3?JSBF_WAKEON_BTN3:0);
     bangleFlags = (bangleFlags&~JSBF_WAKEON_FACEUP) | (wakeOnFaceUp?JSBF_WAKEON_FACEUP:0);
     bangleFlags = (bangleFlags&~JSBF_WAKEON_TOUCH) | (wakeOnTouch?JSBF_WAKEON_TOUCH:0);
+    bangleFlags = (bangleFlags&~JSBF_WAKEON_DBLTAP) | (wakeOnDoubleTap?JSBF_WAKEON_DBLTAP:0);
     bangleFlags = (bangleFlags&~JSBF_WAKEON_TWIST) | (wakeOnTwist?JSBF_WAKEON_TWIST:0);
     bangleFlags = (bangleFlags&~JSBF_POWER_SAVE) | (powerSave?JSBF_POWER_SAVE:0);
     if (lockTimeout<0) lockTimeout=0;
@@ -2785,7 +2759,7 @@ int jswrap_banglejs_isBacklightOn() {
 This function can be used to lock or unlock Bangle.js (e.g. whether buttons and
 touchscreen work or not)
 */
-void jswrap_banglejs_setLocked(bool isLocked) {
+void _jswrap_banglejs_setLocked(bool isLocked, const char *reason) {
 #if defined(TOUCH_I2C)
   if (isLocked) {
     unsigned char buf[2];
@@ -2802,9 +2776,12 @@ void jswrap_banglejs_setLocked(bool isLocked) {
   if ((bangleFlags&JSBF_LOCKED) != isLocked) {
     JsVar *bangle =jsvObjectGetChildIfExists(execInfo.root, "Bangle");
     if (bangle) {
-      JsVar *v = jsvNewFromBool(isLocked);
-      jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"lock", &v, 1);
-      jsvUnLock(v);
+      JsVar *v[2] = {
+        jsvNewFromBool(isLocked),
+        reason ? jsvNewFromString(reason) : 0
+      };
+      jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"lock", v, 2);
+      jsvUnLockMany(2, v);
     }
     jsvUnLock(bangle);
   }
@@ -2814,6 +2791,9 @@ void jswrap_banglejs_setLocked(bool isLocked) {
     inactivityTimer = 0;
     bangleFlags &= ~JSBF_LOCKED;
   }
+}
+void jswrap_banglejs_setLocked(bool isLocked) {
+  _jswrap_banglejs_setLocked(isLocked, "js");
 }
 
 /*JSON{
@@ -3198,20 +3178,30 @@ bool jswrap_banglejs_setBarometerPower(bool isOn, JsVar *appId) {
 #ifdef PRESSURE_DEVICE
   bool wasOn = bangleFlags & JSBF_BAROMETER_ON;
   isOn = setDeviceRequested("Barom", appId, isOn);
-  if (isOn) bangleFlags |= JSBF_BAROMETER_ON;
-  else bangleFlags &= ~JSBF_BAROMETER_ON;
+  if (!isOn) bangleFlags &= ~JSBF_BAROMETER_ON; // if not on, change flag immediately to stop peripheralPollHandler
   int tries = 3;
   while (tries-- > 0) {
     if (isOn) {
       if (!wasOn) {
+        barometerOnTimer = 0;
   #ifdef PRESSURE_DEVICE_SPL06_007_EN
         if (PRESSURE_DEVICE_SPL06_007_EN) {
+          unsigned char buf[SPL06_COEF_NUM];
+          jswrap_banglejs_barometerWr(SPL06_RESET, 0x89); // Perform soft reset
+          // wait for reset complete (max 100ms) - usually takes 40ms
+          int timeout = 10;
+          do {
+            // we can't poll every ms because initially the top bits are still set in MEAS_CFG
+            jshDelayMicroseconds(10000);
+            buf[0] = SPL06_MEASCFG; jsi2cWrite(PRESSURE_I2C, PRESSURE_ADDR, 1, buf, false);
+            jsi2cRead(PRESSURE_I2C, PRESSURE_ADDR, 1, buf, true);
+          } while (((buf[0]&0xC0) != 0xC0) && timeout--);
+          // set up the sensor
           jswrap_banglejs_barometerWr(SPL06_CFGREG, 0); // No FIFO or IRQ (should be default but has been nonzero when read!
           jswrap_banglejs_barometerWr(SPL06_PRSCFG, 0x33); // pressure oversample by 8x, 8 measurement per second
           jswrap_banglejs_barometerWr(SPL06_TMPCFG, 0xB3); // temperature oversample by 8x, 8 measurements per second, external sensor
           jswrap_banglejs_barometerWr(SPL06_MEASCFG, 7); // continuous temperature and pressure measurement
           // read calibration data
-          unsigned char buf[SPL06_COEF_NUM];
           buf[0] = SPL06_COEF_START; jsi2cWrite(PRESSURE_I2C, PRESSURE_ADDR, 1, buf, false);
           jsi2cRead(PRESSURE_I2C, PRESSURE_ADDR, SPL06_COEF_NUM, buf, true);
           barometer_c0 = twosComplement(((unsigned short)buf[0] << 4) | (((unsigned short)buf[1] >> 4) & 0x0F), 12);
@@ -3253,10 +3243,14 @@ bool jswrap_banglejs_setBarometerPower(bool isOn, JsVar *appId) {
         jswrap_banglejs_barometerWr(0xF4, 0); // Barometer off
   #endif
     }
+    // ensure we change the flag here so that peripheralPollHandler polls it now
+    if (isOn) bangleFlags |= JSBF_BAROMETER_ON;
     if (!tries || !jspHasError()) return isOn; // return -  all is going correctly (or we tried a few times and failed)
     // we had an error (almost certainly I2C) - clear the error and try again hopefully
     jsvUnLock(jspGetException());
   }
+  // only turn on
+  if (isOn) bangleFlags |= JSBF_BAROMETER_ON;
   return isOn;
 #else // PRESSURE_DEVICE
   return false;
@@ -3742,23 +3736,23 @@ NO_INLINE void jswrap_banglejs_init() {
     jswrap_banglejs_setTheme();
     v = jsvIsObject(settings) ? jsvObjectGetChildIfExists(settings,"theme") : 0;
     if (jsvIsObject(v)) {
-      graphicsTheme.fg = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"fg"));
-      graphicsTheme.bg = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"bg"));
-      graphicsTheme.fg2 = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"fg2"));
-      graphicsTheme.bg2 = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"bg2"));
-      graphicsTheme.fgH = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"fgH"));
-      graphicsTheme.bgH = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"bgH"));
-      graphicsTheme.dark = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(v,"dark"));
+      graphicsTheme.fg = jsvObjectGetIntegerChild(v,"fg");
+      graphicsTheme.bg = jsvObjectGetIntegerChild(v,"bg");
+      graphicsTheme.fg2 = jsvObjectGetIntegerChild(v,"fg2");
+      graphicsTheme.bg2 = jsvObjectGetIntegerChild(v,"bg2");
+      graphicsTheme.fgH = jsvObjectGetIntegerChild(v,"fgH");
+      graphicsTheme.bgH = jsvObjectGetIntegerChild(v,"bgH");
+      graphicsTheme.dark = jsvObjectGetBoolChild(v,"dark");
     }
     jsvUnLock(v);
   #ifdef TOUCH_DEVICE
     // load touchscreen calibration
     v = jsvIsObject(settings) ? jsvObjectGetChildIfExists(settings,"touch") : 0;
     if (jsvIsObject(v)) {
-      touchMinX = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"x1"));
-      touchMinY = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"y1"));
-      touchMaxX = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"x2"));
-      touchMaxY = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(v,"y2"));
+      touchMinX = jsvObjectGetIntegerChild(v,"x1");
+      touchMinY = jsvObjectGetIntegerChild(v,"y1");
+      touchMaxX = jsvObjectGetIntegerChild(v,"x2");
+      touchMaxY = jsvObjectGetIntegerChild(v,"y2");
     }
     jsvUnLock(v);
   #endif
@@ -4203,8 +4197,14 @@ bool jswrap_banglejs_idle() {
     if (bangleTasks & JSBT_LCD_ON) jswrap_banglejs_setLCDPower(1);
     if (bangleTasks & JSBT_LCD_BL_OFF) jswrap_banglejs_setLCDPowerBacklight(0);
     if (bangleTasks & JSBT_LCD_BL_ON) jswrap_banglejs_setLCDPowerBacklight(1);
-    if (bangleTasks & JSBT_LOCK) jswrap_banglejs_setLocked(1);
-    if (bangleTasks & JSBT_UNLOCK) jswrap_banglejs_setLocked(0);
+    if (bangleTasks & JSBT_LOCK) {
+      _jswrap_banglejs_setLocked(1, lockReason);
+      lockReason = 0;
+    }
+    if (bangleTasks & JSBT_UNLOCK) {
+      _jswrap_banglejs_setLocked(0, lockReason);
+      lockReason = 0;
+    }
     if (bangleTasks & JSBT_RESET) jsiStatus |= JSIS_TODO_FLASH_LOAD;
     if (bangleTasks & JSBT_ACCEL_INTERVAL_DEFAULT) jswrap_banglejs_setPollInterval_internal(DEFAULT_ACCEL_POLL_INTERVAL);
     if (bangleTasks & JSBT_ACCEL_INTERVAL_POWERSAVE) jswrap_banglejs_setPollInterval_internal(POWER_SAVE_ACCEL_POLL_INTERVAL);
@@ -4258,6 +4258,16 @@ bool jswrap_banglejs_idle() {
     JsVar *o = jswrap_banglejs_getBarometerObject();
     if (o) {
       jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"pressure", &o, 1);
+      if (promisePressure) {
+        // disable sensor now we have a result (if it was on for another reason, "getPressure" as ID ensures it'll still stay on)
+        JsVar *id = jsvNewFromString("getPressure");
+        jswrap_banglejs_setBarometerPower(0, id);
+        jsvUnLock(id);
+        // resolve the promise
+        jspromise_resolve(promisePressure, o);
+        jsvUnLock(promisePressure);
+        promisePressure = 0;
+      }
       jsvUnLock(o);
     }
   }
@@ -4915,13 +4925,13 @@ Read temperature, pressure and altitude data. A promise is returned which will
 be resolved with `{temperature, pressure, altitude}`.
 
 If the Barometer has been turned on with `Bangle.setBarometerPower` then this
-will return almost immediately with the reading. If the Barometer is off,
+will return with the *next* reading as of 2v21 (or the existing reading on 2v20 or earlier). If the Barometer is off,
 conversions take between 500-750ms.
 
 Altitude assumes a sea-level pressure of 1013.25 hPa
 
 If there's no pressure device (for example, the emulator),
-this returns undefined, rather than a promise.
+this returns `undefined`, rather than a Promise.
 
 ```
 Bangle.getPressure().then(d=>{
@@ -4933,6 +4943,21 @@ Bangle.getPressure().then(d=>{
 
 #ifdef PRESSURE_DEVICE
 bool jswrap_banglejs_barometerPoll() {
+  // if the Barometer hadn't been on long enough, don't try and get data
+  int powerOnTimeout = 500;
+#ifdef PRESSURE_DEVICE_BMP280_EN
+  if (PRESSURE_DEVICE_BMP280_EN)
+    powerOnTimeout = 750; // some devices seem to need this long to boot reliably
+#endif
+#ifdef PRESSURE_DEVICE_SPL06_007_EN
+if (PRESSURE_DEVICE_SPL06_007_EN)
+  powerOnTimeout = 400; // on SPL06 we may actually be leaving it *too long* before requesting data, and it starts to do another reading
+#endif
+  if (barometerOnTimer < TIMER_MAX)
+    barometerOnTimer += pollInterval;
+  if (barometerOnTimer < powerOnTimeout)
+    return false;
+  // Otherwise, poll it
 #ifdef PRESSURE_DEVICE_HP203_EN
   if (PRESSURE_DEVICE_HP203_EN) {
     unsigned char buf[6];
@@ -5047,21 +5072,6 @@ JsVar *jswrap_banglejs_getBarometerObject() {
   }
   return o;
 }
-
-void jswrap_banglejs_getPressure_callback() {
-  JsVar *o = 0;
-  if (jswrap_banglejs_barometerPoll()) {
-    o = jswrap_banglejs_getBarometerObject();
-  }
-  // disable sensor now we have a result
-  JsVar *id = jsvNewFromString("getPressure");
-  jswrap_banglejs_setBarometerPower(0, id);
-  jsvUnLock(id);
-  // resolve the promise
-  jspromise_resolve(promisePressure, o);
-  jsvUnLock2(promisePressure,o);
-  promisePressure = 0;
-}
 #endif // PRESSURE_DEVICE
 
 
@@ -5073,44 +5083,38 @@ JsVar *jswrap_banglejs_getPressure() {
   }
   promisePressure = jspromise_create();
   if (!promisePressure) return 0;
-
-  // If barometer is already on, just resolve promise with the current result
-  if (bangleFlags & JSBF_BAROMETER_ON) {
-    JsVar *o = jswrap_banglejs_getBarometerObject();
-    jspromise_resolve(promisePressure, o);
-    jsvUnLock(o);
-    JsVar *r = promisePressure;
-    promisePressure = 0;
-    return r;
-  }
-
+  // If barometer is already on, our promise is enough. jswrap_banglejs_idle (after peripheralPollHandler)
+  // will see promisePressure and will resolve it when new data is available
+  if (bangleFlags & JSBF_BAROMETER_ON)
+    return jsvLockAgain(promisePressure);
+  // Turning barometer on, will turn off in jswrap_banglejs_idle (after peripheralPollHandler)
   JsVar *id = jsvNewFromString("getPressure");
   jswrap_banglejs_setBarometerPower(1, id);
   jsvUnLock(id);
   /* Occasionally on some devices (https://github.com/espruino/Espruino/issues/2137)
   you can get an I2C error. This stops the error from being fired when getPressure
   is called and instead rejects the promise. */
+  JsVar *exception = jspGetException();
+  if (exception) {
+    jspromise_reject(promisePressure, exception);
+    jsvUnLock2(promisePressure, exception);
+    JsVar *r = promisePressure;
+    promisePressure = 0;
+    return r;
+  }
+
   bool hadError = jspHasError();
   if (hadError) {
-    JsVar *exception = jspGetException();
+    JsVar *msg = jsvNewFromString("I2C barometer error");
+    JsVar *exception = jswrap_internalerror_constructor(msg);
     jspromise_reject(promisePressure, exception);
-    jsvUnLock2(promisePressure,exception);
+    jsvUnLock3(promisePressure, exception, msg);
+    JsVar *r = promisePressure;
     promisePressure = 0;
-  } else {
-    int powerOnTimeout = 500;
-#ifdef PRESSURE_DEVICE_BMP280_EN
-    if (PRESSURE_DEVICE_BMP280_EN)
-      powerOnTimeout = 750; // some devices seem to need this long to boot reliably
-#endif
-#ifdef PRESSURE_DEVICE_SPL06_007_EN
-    if (PRESSURE_DEVICE_SPL06_007_EN)
-      powerOnTimeout = 400; // on SPL06 we may actually be leaving it *too long* before requesting data, and it starts to do another reading
-#endif
-    jsvUnLock(jsiSetTimeout(jswrap_banglejs_getPressure_callback, powerOnTimeout));
-    return jsvLockAgain(promisePressure);
+    return r;
   }
+  return jsvLockAgain(promisePressure);
 #endif
-  return 0;
 }
 
 /*JSON{
@@ -5137,8 +5141,8 @@ JsVar *jswrap_banglejs_project(JsVar *latlong) {
   const double degToRad = PI / 180; // degree to radian conversion
   const double latMax = 85.0511287798; // clip latitude to sane values
   const double R = 6378137; // earth radius in m
-  double lat = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(latlong,"lat"));
-  double lon = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(latlong,"lon"));
+  double lat = jsvObjectGetFloatChild(latlong,"lat");
+  double lon = jsvObjectGetFloatChild(latlong,"lon");
   if (lat > latMax) lat=latMax;
   if (lat < -latMax) lat=-latMax;
   double s = sin(lat * degToRad);
@@ -5283,7 +5287,7 @@ static void jswrap_banglejs_periph_off() {
 #endif
   jshPinOutput(VIBRATE_PIN,0); // vibrate off
   //jswrap_banglejs_setLCDPower calls JS events (and sometimes timers), so avoid it and manually turn controller + backlight off:
-  jswrap_banglejs_setLocked(1); // disable touchscreen if we have one
+  _jswrap_banglejs_setLocked(1,NULL); // disable touchscreen if we have one
   jswrap_banglejs_setLCDPowerController(0);
   jswrap_banglejs_pwrBacklight(0);
 #ifdef ACCEL_DEVICE_KX023
@@ -5624,7 +5628,30 @@ Load the Bangle.js clock - this has the same effect as calling `Bangle.load()`.
 }
 Show a 'recovery' menu that allows you to perform certain tasks on your Bangle.
 
-You can also enter this menu by restarting while holding down the `BTN1`
+You can also enter this menu by restarting your Bangle while holding down the button.
+*/
+/*JSON{
+    "type" : "staticmethod", "class" : "Bangle", "name" : "showRecoveryMenu", "patch":true,
+    "generate_js" : "libs/js/banglejs/Bangle_showRecoveryMenu_F18.min.js",
+    "#if" : "defined(BANGLEJS) && defined(BANGLEJS_F18)"
+}
+*/
+
+/*JSON{
+    "type" : "staticmethod",
+    "class" : "Bangle",
+    "name" : "showTestScreen",
+    "generate_js" : "libs/js/banglejs/Bangle_showTestScreen.js",
+    "ifdef" : "BANGLEJS2"
+}
+(2v20 and later) Show a test screen that lights green when each sensor on the Bangle
+works and reports within range.
+
+Swipe on the screen when all items are green and the Bangle will turn bluetooth off
+and display a `TEST PASS` screen for 60 minutes, after which it will turn off.
+
+You can enter this menu by restarting your Bangle while holding down the button,
+then choosing `Test` from the recovery menu.
 */
 
 /*JSON{

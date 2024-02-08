@@ -918,7 +918,7 @@ advertise battery level and its name as well as both Eddystone and iBeacon :
 
 ```
 NRF.setAdvertising([
-  {0x180F : [Puck.getBatteryPercentage()]}, // normal advertising, with battery %
+  {0x180F : [E.getBattery()]}, // normal advertising, with battery %
   require("ble_ibeacon").get(...), // iBeacon
   require("ble_eddystone").get(...), // eddystone
 ], {interval:300});
@@ -938,7 +938,7 @@ NRF.setAdvertising([
   interval: 600              // Advertising interval in msec, between 20 and 10000 (default is 375ms)
   manufacturer: 0x0590       // IF sending manufacturer data, this is the manufacturer ID
   manufacturerData: [...]    // IF sending manufacturer data, this is an array of data
-  phy: "1mbps/2mbps/coded"   // (NRF52840 only) use the long-range coded phy for transmission (1mbps default)
+  phy: "1mbps/2mbps/coded"   // (NRF52833/NRF52840 only) use the long-range coded phy for transmission (1mbps default)
 }
 ```
 
@@ -1703,8 +1703,8 @@ void jswrap_ble_updateServices(JsVar *data) {
           JsVar *charVar = jsvObjectIteratorGetValue(&serviceit);
           JsVar *charValue = jsvObjectGetChildIfExists(charVar, "value");
 
-          bool notification_requested = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "notify"));
-          bool indication_requested = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "indicate"));
+          bool notification_requested = jsvObjectGetBoolChild(charVar, "notify");
+          bool indication_requested = jsvObjectGetBoolChild(charVar, "indicate");
 
           if (charValue) {
             JSV_GET_AS_CHAR_ARRAY(vPtr, vLen, charValue);
@@ -1747,8 +1747,7 @@ void jswrap_ble_updateServices(JsVar *data) {
 #endif
             }
           }
-          jsvUnLock(charValue);
-          jsvUnLock(charVar);
+          jsvUnLock2(charValue, charVar);
         } else {
           JsVar *str = bleUUIDToStr(char_uuid);
           jsExceptionHere(JSET_ERROR, "Unable to find service with UUID %v", str);
@@ -3278,9 +3277,9 @@ a match is found. e.g. `NRF.requestDevice({ timeout:2000, filters: [ ... ] })`
 * `active` - whether to perform active scanning (requesting 'scan response'
 packets from any devices that are found). e.g. `NRF.requestDevice({ active:true,
 filters: [ ... ] })`
-* `phy` - (NRF52840 only) use the long-range coded phy (`"1mbps"` default, can
+* `phy` - (NRF52833/NRF52840 only) use the long-range coded phy (`"1mbps"` default, can
   be `"1mbps/2mbps/both/coded"`)
-* `extended` - (NRF52840 only) support receiving extended-length advertising
+* `extended` - (NRF52833/NRF52840 only) support receiving extended-length advertising
   packets (default=true if phy isn't `"1mbps"`)
 
 **NOTE:** `timeout` and `active` are not part of the Web Bluetooth standard.
@@ -3386,7 +3385,7 @@ JsVar *jswrap_ble_requestDevice(JsVar *options) {
   }
   jsvUnLock(filters);
 
-  JsVarFloat timeout = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(options, "timeout"));
+  JsVarFloat timeout = jsvObjectGetFloatChild(options, "timeout");
   if (isnan(timeout) || timeout<=0) timeout = 2000;
 
   JsVar *promise = 0;
@@ -3554,8 +3553,8 @@ void jswrap_ble_setConnectionInterval(JsVar *interval) {
   } else if (jsvIsObject(interval)) {
     // disable auto interval
     bleStatus |= BLE_DISABLE_DYNAMIC_INTERVAL;
-    JsVarFloat min = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(interval,"minInterval"));
-    JsVarFloat max = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(interval,"maxInterval"));
+    JsVarFloat min = jsvObjectGetFloatChild(interval,"minInterval");
+    JsVarFloat max = jsvObjectGetFloatChild(interval,"maxInterval");
     jsble_check_error(jsble_set_periph_connection_interval(min, max));
   }
 #endif
@@ -3946,7 +3945,7 @@ JsVar *jswrap_ble_BluetoothRemoteGATTServer_connect(JsVar *parent, JsVar *option
   jsvUnLock(device);
 
   // we're already connected - just return a resolved promise
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(parent,"connected"))) {
+  if (jsvObjectGetBoolChild(parent,"connected")) {
     return jswrap_promise_resolve(parent);
   }
 
@@ -4491,7 +4490,7 @@ JsVar *jswrap_ble_BluetoothRemoteGATTCharacteristic_startNotifications(JsVar *ch
 
   // Set our characteristic's handle up in the list of handles to notify for
   // TODO: What happens when we close the connection and re-open another?
-  uint16_t handle = (uint16_t)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(characteristic, "handle_value"));
+  uint16_t handle = (uint16_t)jsvObjectGetIntegerChild(characteristic, "handle_value");
   JsVar *handles = jsvObjectGetChild(execInfo.hiddenRoot, "bleHdl", JSV_ARRAY);
   if (handles) {
     jsvSetArrayItem(handles, handle, characteristic);
@@ -4541,7 +4540,7 @@ JsVar *jswrap_ble_BluetoothRemoteGATTCharacteristic_stopNotifications(JsVar *cha
   uint16_t central_conn_handle = jswrap_ble_BluetoothRemoteGATTCharacteristic_getHandle(characteristic);
 
   // Remove our characteristic handle from the list of handles to notify for
-  uint16_t handle = (uint16_t)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(characteristic, "handle_value"));
+  uint16_t handle = (uint16_t)jsvObjectGetIntegerChild(characteristic, "handle_value");
   JsVar *handles = jsvObjectGetChild(execInfo.hiddenRoot, "bleHdl", JSV_ARRAY);
   if (handles) {
     jsvSetArrayItem(handles, handle, 0);

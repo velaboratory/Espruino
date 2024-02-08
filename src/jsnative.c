@@ -145,6 +145,12 @@ JsVar *jsnCallFunction(void *function, JsnArgumentType argumentSpecifier, JsVar 
     case JSWAT_INT32: // 32 bit int
       argData[argCount++] = (uint32_t)jsvGetInteger(param);
       break;
+    case JSWAT_FLOAT32: { // 32 bit float
+      union {uint32_t i; float f;} v; // with softfp convention float values are passed in integer registers
+      v.f = (float) jsvGetFloat(param); // truncate from double
+      argData[argCount++] = v.i;
+      break;
+    }
 #ifndef ESPR_EMBED
     case JSWAT_PIN: // 16 bit int
       argData[argCount++] = (uint32_t)jshGetPinFromVar(param);
@@ -265,6 +271,11 @@ JsVar *jsnCallFunction(void *function, JsnArgumentType argumentSpecifier, JsVar 
     return jsvNewFromInteger((JsVarInt)result);
   case JSWAT_JSVARFLOAT: // 64 bit float
     return jsvNewFromFloat(*(JsVarFloat*)&result);
+  case JSWAT_FLOAT32:  {// 32 bit float
+    union {uint32_t i; float f;} v; // with softfp convention float values are passed in integer registers
+    v.i = (uint32_t)result;
+    return jsvNewFromFloat((JsVarFloat)v.f);
+  }
   default:
     assert(0);
     return 0;
@@ -273,6 +284,17 @@ JsVar *jsnCallFunction(void *function, JsnArgumentType argumentSpecifier, JsVar 
 }
 
 // -----------------------------------------------------------------------------------------
+
+// compile time sanity tests
+
+char const sanity_test_arraybuffer_type_one_byte[sizeof(JsVarDataArrayBufferViewType) == 1 ? 1 : -1];
+char const sanity_test_arraybuffer_in_jsvar[sizeof(JsVarDataArrayBufferView) <= JSVAR_DATA_ARRAYBUFFER_LEN ? 1 : -1];
+char const sanity_test_native_in_jsvar[sizeof(JsVarDataNative) <= JSVAR_DATA_NATIVE_LEN ? 1 : -1];
+char const sanity_test_nativestr_in_jsvar[sizeof(JsVarDataNativeStr) <= JSVAR_DATA_NATIVESTR_LEN ? 1 : -1];
+char const sanity_test_jsvarflags_is_2bytes[sizeof(JsVarFlags) == 2 ? 1 : -1];
+char const sanity_test_ioeventflags_is_1byte[sizeof(IOEventFlags) == 1 ? 1 : -1];
+
+// runtime sanity tests
 
 JsVarFloat sanity_pi() { return 3.141592; }
 int32_t sanity_int_pass(int32_t hello) { return (hello*10)+5; }

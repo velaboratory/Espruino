@@ -115,7 +115,6 @@ typedef enum {
   ARRAYBUFFERVIEW_FLOAT = 32,
   ARRAYBUFFERVIEW_CLAMPED = 64, // As in Uint8ClampedArray - clamp to the acceptable bounds
   ARRAYBUFFERVIEW_ARRAYBUFFER = 1 | 128, ///< Basic ArrayBuffer type
-  ARRAYBUFFERVIEW_BIG_ENDIAN = 256, ///< access as big endian (normally little)
   ARRAYBUFFERVIEW_UINT8   = 1,
   ARRAYBUFFERVIEW_INT8    = 1 | ARRAYBUFFERVIEW_SIGNED,
   ARRAYBUFFERVIEW_UINT16  = 2,
@@ -131,15 +130,19 @@ typedef enum {
 #define JSV_ARRAYBUFFER_IS_FLOAT(T) (((T)&ARRAYBUFFERVIEW_FLOAT)!=0)
 #define JSV_ARRAYBUFFER_IS_CLAMPED(T) (((T)&ARRAYBUFFERVIEW_CLAMPED)!=0)
 
-#if JSVAR_DATA_STRING_LEN<8 // only enough space for a 16 bit length
+#if JSVAR_DATA_NATIVESTR_LEN<8 // only enough space for a 16 bit length
 typedef uint16_t JsVarDataNativeStrLength;
 #define JSV_NATIVE_STR_MAX_LENGTH 65535
+#else // enough space for 32 bits
+typedef uint32_t JsVarDataNativeStrLength;
+#define JSV_NATIVE_STR_MAX_LENGTH 0xFFFFFFFF
+#endif
+
+#if JSVAR_DATA_STRING_LEN<8 // only enough space for a 16 bit length
 typedef uint16_t JsVarArrayBufferLength;
 #define JSV_ARRAYBUFFER_MAX_LENGTH 65535
 #define JSV_ARRAYBUFFER_LENGTH_BITS
 #else // enough space for 24 bit length
-typedef uint32_t JsVarDataNativeStrLength;
-#define JSV_NATIVE_STR_MAX_LENGTH 0xFFFFFFFF
 typedef uint32_t JsVarArrayBufferLength;
 #define JSV_ARRAYBUFFER_MAX_LENGTH 0xFFFFFF
 #define JSV_ARRAYBUFFER_LENGTH_BITS : 24
@@ -152,13 +155,13 @@ typedef struct {
   JsVarDataArrayBufferViewType type;
 } PACKED_FLAGS JsVarDataArrayBufferView;
 
-/// Data for native functions
+/// Data for native functions. Has to fit behind firstChild
 typedef struct {
   void (*ptr)(void); ///< Function pointer - this may not be the real address - see jsvGetNativeFunctionPtr
   uint16_t argTypes; ///< Actually a list of JsnArgumentType
 } PACKED_FLAGS JsVarDataNative;
 
-/// Data for native strings
+/// Data for native strings. Has to fit behind refCount
 typedef struct {
   char *ptr;
   JsVarDataNativeStrLength len;
@@ -247,12 +250,12 @@ typedef struct JsVarStruct {
 
 
  | Offset | Size | Name    | STRING | STR_EXT  | NAME_STR | NAME_INT | INT  | DOUBLE  | OBJ/FUNC/ARRAY | ARRAYBUFFER | NATIVE_STR | FLAT_STR |
- |        |      |         |        |          |          |          |      |         |                |             | FLASH_STR  |          |
+ | 16b    |      |         |        |          |          |          |      |         |                |             | FLASH_STR  |          |
  |--------|------|---------|--------|----------|----------|----------|------|---------|----------------|-------------|------------|----------|
  | 0 - 3  | 4    | varData | data   | data     |  data    | data     | data | data    | nativePtr      | size        | ptr        | charLen  |
  | 4 - 5  | ?    | next    | data   | data     |  next    | next     |  -   | data    | argTypes       | format      | len        | -        |
  | 6 - 7  | ?    | prev    | data   | data     |  prev    | prev     |  -   | data    | argTypes       | format      | ..len      | -        |
- | 8 - 9  | ?    | first   | data   | data     |  child   | child    |  -   | data?   | first          | stringPtr   | -          | -        |
+ | 8 - 9  | ?    | first   | data   | data     |  child   | child    |  -   | data?   | first          | stringPtr   | ..len      | -        |
  | 10-11  | ?    | refs    | refs   | data     |  refs    | refs     | refs | refs    | refs           | refs        | refs       | refs     |
  | 12-13  | ?    | last    | nextPtr| nextPtr  |  nextPtr |  -       |  -   |  -      | last           | -           | -          | -        |
  | 14-15  | 2    | Flags   | Flags  | Flags    |  Flags   | Flags    | Flags| Flags   | Flags          | Flags       | Flags      | Flags    |
@@ -314,6 +317,7 @@ JsVar *jsvNewUTF8StringAndUnLock(JsVar* dataString); ///< Create a new unicode s
 static ALWAYS_INLINE JsVar *jsvNewNull() { return jsvNewWithFlags(JSV_NULL); } ;///< Create a new null variable
 /** Create a new variable from a substring. argument must be a string. stridx = start char or str, maxLength = max number of characters (can be JSVAPPENDSTRINGVAR_MAXLENGTH)  */
 JsVar *jsvNewFromStringVar(const JsVar *str, size_t stridx, size_t maxLength);
+JsVar *jsvNewFromStringVarComplete(JsVar *var);
 JsVar *jsvNewFromInteger(JsVarInt value);
 JsVar *jsvNewFromBool(bool value);
 JsVar *jsvNewFromFloat(JsVarFloat value);
@@ -335,10 +339,10 @@ JsVar *jsvNewFromPin(int pin);
 #endif
 
 
-/// Turns var into a Variable name that links to the given value... No locking so no need to unlock var
+/// Turns var into a Variable name that links to the given value (or return a new var that is a name)... No need for the caller to unlock var.
 JsVar *jsvMakeIntoVariableName(JsVar *var, JsVar *valueOrZero);
 /// Turns var into a 'function parameter' that the parser recognises when parsing a function
-void jsvMakeFunctionParameter(JsVar *v);
+JsVar *jsvMakeFunctionParameter(JsVar *v);
 /// Add a new function parameter to a function (name may be 0) - use this when binding function arguments This unlocks paramName if specified, but not value.
 void jsvAddFunctionParameter(JsVar *fn, JsVar *name, JsVar *value);
 
@@ -638,7 +642,8 @@ JsVar *jsvAsArrayIndex(JsVar *index);
 /** Same as jsvAsArrayIndex, but ensures that 'index' is unlocked */
 JsVar *jsvAsArrayIndexAndUnLock(JsVar *a);
 
-/** Try and turn the supplied variable into a name. If not, make a new one. This locks again. */
+/** Try and turn the supplied variable into a name. If not, make a new one. The result is locked but
+ * the parameter should still be unlocked by the caller. */
 JsVar *jsvAsName(JsVar *var);
 
 /// MATHS!
@@ -670,6 +675,8 @@ JsVar *jsvFindChildFromVar(JsVar *parent, JsVar *childName, bool addIfNotFound);
 
 /// Remove a child - note that the child MUST ACTUALLY BE A CHILD! and should be a name, not a value.
 void jsvRemoveChild(JsVar *parent, JsVar *child);
+/// See jsvRemoveChild (this just unlocks child after)
+void jsvRemoveChildAndUnLock(JsVar *parent, JsVar *child);
 void jsvRemoveAllChildren(JsVar *parent);
 
 /// Get the named child of an object. If createChild!=0 then create the child
@@ -678,6 +685,12 @@ JsVar *jsvObjectGetChild(JsVar *obj, const char *name, JsVarFlags createChild);
 JsVar *jsvObjectGetChildIfExists(JsVar *obj, const char *name);
 /// Get the named child of an object using a case-insensitive search
 JsVar *jsvObjectGetChildI(JsVar *obj, const char *name);
+/// Same as jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(obj, name))
+bool jsvObjectGetBoolChild(JsVar *obj, const char *name);
+/// Same as jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(obj, name))
+JsVarInt jsvObjectGetIntegerChild(JsVar *obj, const char *name);
+/// Same as jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(obj, name))
+JsVarFloat jsvObjectGetFloatChild(JsVar *obj, const char *name);
 /// Set the named child of an object, and return the child (so you can choose to unlock it if you want)
 JsVar *jsvObjectSetChild(JsVar *obj, const char *name, JsVar *child);
 /// Set the named child of an object, and return the child (so you can choose to unlock it if you want)
@@ -710,6 +723,7 @@ JsVar *jsvGetIndexOf(JsVar *arr, JsVar *value, bool matchExact); ///< Get the in
 JsVarInt jsvArrayAddToEnd(JsVar *arr, JsVar *value, JsVarInt initialValue); ///< Adds new elements to the end of an array, and returns the new length. initialValue is the item index when no items are currently in the array.
 JsVarInt jsvArrayPush(JsVar *arr, JsVar *value); ///< Adds a new element to the end of an array, and returns the new length
 JsVarInt jsvArrayPushAndUnLock(JsVar *arr, JsVar *value); ///< Adds a new element to the end of an array, unlocks it, and returns the new length
+JsVarInt jsvArrayPushString(JsVar *arr, const char *string); ///< Adds a new String element to the end of an array, and returns the new length. Same as jsvArrayPushAndUnLock(arr, jsvNewFromString(str))
 void jsvArrayPush2Int(JsVar *arr, JsVarInt a, JsVarInt b); ///< Push 2 integers onto the end of an array
 void jsvArrayPushAll(JsVar *target, JsVar *source, bool checkDuplicates); ///< Append all values from the source array to the target array
 JsVar *jsvArrayPop(JsVar *arr); ///< Removes the last element of an array, and returns that element (or 0 if empty). includes the NAME

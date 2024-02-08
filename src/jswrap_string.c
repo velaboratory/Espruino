@@ -280,7 +280,7 @@ JsVar *jswrap_string_match(JsVar *parent, JsVar *subStr) {
     while (match && !jsvIsNull(match)) {
       // get info about match
       JsVar *matchStr = jsvGetArrayItem(match,0);
-      JsVarInt idx = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(match,"index"));
+      JsVarInt idx = jsvObjectGetIntegerChild(match,"index");
       JsVarInt len = (JsVarInt)jsvGetStringLength(matchStr);
       int last = idx+len;
       jsvArrayPushAndUnLock(array, matchStr);
@@ -350,7 +350,7 @@ JsVar *jswrap_string_replace(JsVar *parent, JsVar *subStr, JsVar *newSubStr) {
     while (match && !jsvIsNull(match) && !jspIsInterrupted()) {
       // get info about match
       JsVar *matchStr = jsvGetArrayItem(match,0);
-      JsVarInt idx = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(match,"index"));
+      JsVarInt idx = jsvObjectGetIntegerChild(match,"index");
       JsVarInt len = (JsVarInt)jsvGetStringLength(matchStr);
       // do the replacement
       jsvStringIteratorAppendString(&dst, str, (size_t)lastIndex, (idx-lastIndex)); // the string before the match
@@ -416,7 +416,7 @@ JsVar *jswrap_string_replace(JsVar *parent, JsVar *subStr, JsVar *newSubStr) {
   int idx = jswrap_string_indexOf(parent, subStr, 0, false);
   if (idx>=0) {
     JsVar *newStr = jsvNewFromStringVar(str, 0, (size_t)idx);
-    jsvAppendStringVar(newStr, newSubStr, 0, JSVAPPENDSTRINGVAR_MAXLENGTH);
+    jsvAppendStringVarComplete(newStr, newSubStr);
     jsvAppendStringVar(newStr, str, (size_t)idx+jsvGetStringLength(subStr), JSVAPPENDSTRINGVAR_MAXLENGTH);
     jsvUnLock(str);
     str = newStr;
@@ -527,7 +527,7 @@ JsVar *jswrap_string_split(JsVar *parent, JsVar *split) {
     while (match && !jsvIsNull(match)) {
       // get info about match
       JsVar *matchStr = jsvGetArrayItem(match,0);
-      JsVarInt idx = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(match,"index"));
+      JsVarInt idx = jsvObjectGetIntegerChild(match,"index");
       int len = (int)jsvGetStringLength(matchStr);
       jsvUnLock(matchStr);
       // do the replacement
@@ -895,7 +895,7 @@ JsVar *jswrap_string_padX(JsVar *str, int targetLength, JsVar *padString, bool p
 
   int padChars = targetLength - (int)jsvGetStringLength(str);
 
-  JsVar *result = padStart ? jsvNewFromEmptyString() : jsvNewFromStringVar(str,0,JSVAPPENDSTRINGVAR_MAXLENGTH);
+  JsVar *result = padStart ? jsvNewFromEmptyString() : jsvNewFromStringVarComplete(str);
   if (!result) return 0;
 
   padString = padString ? jsvAsString(padString) : jsvNewFromString(" ");

@@ -498,7 +498,7 @@ void jsiSoftInit(bool hasBeenReset) {
     while (jsvObjectIteratorHasValue(&it)) {
       JsVar *watch = jsvObjectIteratorGetValue(&it);
       JsVar *watchPin = jsvObjectGetChildIfExists(watch, "pin");
-      bool highAcc = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watch, "hispeed"));
+      bool highAcc = jsvObjectGetBoolChild(watch, "hispeed");
       jshPinWatch(jshGetPinFromVar(watchPin), true, highAcc?JSPW_HIGH_SPEED:JSPW_NONE);
       jsvUnLock2(watchPin, watch);
       jsvObjectIteratorNext(&it);
@@ -557,7 +557,7 @@ NO_INLINE void jsiDumpObjectState(vcbprintf_callback user_callback, void *user_d
     if (!checker || !checker(child)) {
       if (jsvIsStringEqual(child, JSPARSE_PROTOTYPE_VAR)) {
         // recurse to print prototypes
-        JsVar *name = jsvNewFromStringVar(parentName,0,JSVAPPENDSTRINGVAR_MAXLENGTH);
+        JsVar *name = jsvNewFromStringVarComplete(parentName);
         if (name) {
           jsvAppendString(name, ".prototype");
           jsiDumpObjectState(user_callback, user_data, name, data);
@@ -1016,8 +1016,7 @@ void jsiHistoryAddLine(JsVar *newLine) {
   // if it was already in history, remove it - we'll put it back in front
   JsVar *alreadyInHistory = jsvGetIndexOf(history, newLine, false/*not exact*/);
   if (alreadyInHistory) {
-    jsvRemoveChild(history, alreadyInHistory);
-    jsvUnLock(alreadyInHistory);
+    jsvRemoveChildAndUnLock(history, alreadyInHistory);
   }
   // put it back in front
   jsvArrayPush(history, newLine);
@@ -1821,7 +1820,7 @@ bool jsiHasTimers() {
 
 /// Is the given watch object meant to be executed when the current value of the pin is pinIsHigh
 bool jsiShouldExecuteWatch(JsVar *watchPtr, bool pinIsHigh) {
-  int watchEdge = (int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(watchPtr, "edge"));
+  int watchEdge = (int)jsvObjectGetIntegerChild(watchPtr, "edge");
   return watchEdge==0 || // any edge
       (pinIsHigh && watchEdge>0) || // rising edge
       (!pinIsHigh && watchEdge<0); // falling edge
@@ -2003,12 +2002,12 @@ void jsiIdle() {
           bool pinIsHigh = (event.flags&EV_EXTI_IS_HIGH)!=0;
 
           bool executeNow = false;
-          JsVarInt debounce = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(watchPtr, "debounce"));
+          JsVarInt debounce = jsvObjectGetIntegerChild(watchPtr, "debounce");
           if (debounce<=0) {
             executeNow = true;
           } else { // Debouncing - use timeouts to ensure we only fire at the right time
             // store the current state of the pin
-            bool oldWatchState = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watchPtr, "state"));
+            bool oldWatchState = jsvObjectGetBoolChild(watchPtr, "state");
             JsVar *timeout = jsvObjectGetChildIfExists(watchPtr, "timeout");
             if (timeout) { // if we had a timeout, update the callback time
               JsSysTime timeoutTime = jsiLastIdleTime + (JsSysTime)jsvGetLongIntegerAndUnLock(jsvObjectGetChildIfExists(timeout, "time"));
@@ -2049,7 +2048,7 @@ void jsiIdle() {
             JsVar *timePtr = jsvNewFromFloat(jshGetMillisecondsFromTime(eventTime)/1000);
             if (jsiShouldExecuteWatch(watchPtr, pinIsHigh)) { // edge triggering
               JsVar *watchCallback = jsvObjectGetChildIfExists(watchPtr, "callback");
-              bool watchRecurring = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watchPtr,  "recur"));
+              bool watchRecurring = jsvObjectGetBoolChild(watchPtr,  "recur");
               JsVar *data = jsvNewObject();
               if (data) {
                 jsvObjectSetChildAndUnLock(data, "state", jsvNewFromBool(pinIsHigh));
@@ -2137,13 +2136,13 @@ void jsiIdle() {
         bool exec = true;
         JsVar *data = 0;
         if (watchPtr) {
-          bool watchState = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watchPtr, "state"));
-          bool timerState = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(timerPtr, "state"));
+          bool watchState = jsvObjectGetBoolChild(watchPtr, "state");
+          bool timerState = jsvObjectGetBoolChild(timerPtr, "state");
           jsvObjectSetChildAndUnLock(watchPtr, "state", jsvNewFromBool(timerState));
           exec = false;
           if (watchState!=timerState) {
             // Create the 'time' variable that will be passed to the user and stored as last time
-            JsVarInt delay = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(watchPtr, "debounce"));
+            JsVarInt delay = jsvObjectGetIntegerChild(watchPtr, "debounce");
             JsVar *timePtr = jsvNewFromFloat(jshGetMillisecondsFromTime(jsiLastIdleTime+timerTime-delay)/1000);
             // If it's the right edge...
             if (jsiShouldExecuteWatch(watchPtr, timerState)) {
@@ -2189,13 +2188,12 @@ void jsiIdle() {
           jsvObjectRemoveChild(watchPtr, "timeout");
           // Deal with non-recurring watches
           if (exec) {
-            bool watchRecurring = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watchPtr,  "recur"));
+            bool watchRecurring = jsvObjectGetBoolChild(watchPtr,  "recur");
             if (!watchRecurring) {
               JsVar *watchArrayPtr = jsvLock(watchArray);
               JsVar *watchNamePtr = jsvGetIndexOf(watchArrayPtr, watchPtr, true);
               if (watchNamePtr) {
-                jsvRemoveChild(watchArrayPtr, watchNamePtr);
-                jsvUnLock(watchNamePtr);
+                jsvRemoveChildAndUnLock(watchArrayPtr, watchNamePtr);
               }
               jsvUnLock(watchArrayPtr);
               Pin pin = jshGetPinFromVarAndUnLock(jsvObjectGetChildIfExists(watchPtr, "pin"));
@@ -2466,10 +2464,10 @@ void jsiDumpState(vcbprintf_callback user_callback, void *user_data) {
   while (jsvObjectIteratorHasValue(&it)) {
     JsVar *watch = jsvObjectIteratorGetValue(&it);
     JsVar *watchCallback = jsvSkipOneNameAndUnLock(jsvFindChildFromString(watch, "callback"));
-    bool watchRecur = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(watch, "recur"));
-    int watchEdge = (int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(watch, "edge"));
+    bool watchRecur = jsvObjectGetBoolChild(watch, "recur");
+    int watchEdge = (int)jsvObjectGetIntegerChild(watch, "edge");
     JsVar *watchPin = jsvObjectGetChildIfExists(watch, "pin");
-    JsVarInt watchDebounce = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(watch, "debounce"));
+    JsVarInt watchDebounce = jsvObjectGetIntegerChild(watch, "debounce");
     user_callback("setWatch(", user_data);
     jsiDumpJSON(user_callback, user_data, watchCallback, 0);
     cbprintf(user_callback, user_data, ", %j, { repeat:%s, edge:'%s'",

@@ -100,6 +100,8 @@ Pin jshNeoPixelPin = PIN_UNDEFINED; ///< The currently setup Neopixel pin (set b
 
 #ifdef USB
 JsSysTime jshLastWokenByUSB = 0;
+volatile unsigned char jshUSBReceiveLastActive = 0; ///< How many systicks since USB was actively requesting data?
+#define JSH_USB_MAX_INACTIVITY_TICKS 10 ///< How many systicks before we start throwing away/deleting EV_USBSERIAL data
 #endif
 
 #if USART_ENABLED
@@ -807,7 +809,11 @@ void jshDoSysTick() {
 
   if (ticksSinceStart!=0xFFFFFFFF)
     ticksSinceStart++;
- #ifdef USE_RTC
+#ifdef USB // if USB was connected but we haven't been able to send any data
+  if (jshUSBReceiveLastActive < 255)
+    jshUSBReceiveLastActive++;
+#endif
+#ifdef USE_RTC
   if (ticksSinceStart==RTC_INITIALISE_TICKS) {
     // Use LSI if the LSE hasn't stabilised
     bool isUsingLSI = RCC_GetFlagStatus(RCC_FLAG_LSERDY)==RESET;
@@ -1434,6 +1440,8 @@ void jshIdle() {
   bool USBConnected = jshIsUSBSERIALConnected();
   if (wasUSBConnected != USBConnected) {
     wasUSBConnected = USBConnected;
+    if (USBConnected)
+      jshClearUSBIdleTimeout();
     if (USBConnected && jsiGetConsoleDevice()!=EV_LIMBO) {
       if (!jsiIsConsoleDeviceForced())
         jsiSetConsoleDevice(EV_USBSERIAL, false);
@@ -1478,7 +1486,7 @@ int jshGetSerialNumber(unsigned char *data, int maxChars) {
 
 bool jshIsUSBSERIALConnected() {
 #ifdef USB
-  return USB_IsConnected();
+  return USB_IsConnected() && (jshUSBReceiveLastActive < JSH_USB_MAX_INACTIVITY_TICKS);
 #else
   return false;
 #endif
@@ -1536,7 +1544,7 @@ JsSysTime jshGetRTCSystemTime() {
   cdate.month = date.RTC_Month-1; // 1..12 -> 0..11
   cdate.year = 2000+date.RTC_Year; // 0..99 -> 2000..2099
   cdate.dow = date.RTC_WeekDay%7; // 1(monday)..7 -> 0(sunday)..6
-  ctime.daysSinceEpoch = fromCalenderDate(&cdate);
+  ctime.daysSinceEpoch = fromCalendarDate(&cdate);
   ctime.zone = 0;
   ctime.ms = 0;
   ctime.sec = time.RTC_Seconds;
@@ -2531,6 +2539,13 @@ void jshSetUSBPower(bool isOn) {
 }
 #endif
 
+#ifdef USB
+/// Flags that we've been able to send data down USB, so it's ok to have data in the output buffer
+void jshClearUSBIdleTimeout() {
+  jshUSBReceiveLastActive = 0;
+}
+#endif
+
 /// Enter simple sleep mode (can be woken up by interrupts). Returns true on success
 bool jshSleep(JsSysTime timeUntilWake) {
 #ifdef USE_RTC
@@ -3040,10 +3055,10 @@ int jshSetSystemClockPClk(JsVar *options, const char *clkName) {
 unsigned int jshSetSystemClock(JsVar *options) {
   // see system_stm32f4xx.c for clock configurations
 #ifdef STM32F4
-  unsigned int m = (unsigned int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(options, "M"));
-  unsigned int n = (unsigned int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(options, "N"));
-  unsigned int p = (unsigned int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(options, "P"));
-  unsigned int q = (unsigned int)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(options, "Q"));
+  unsigned int m = (unsigned int)jsvObjectGetIntegerChild(options, "M");
+  unsigned int n = (unsigned int)jsvObjectGetIntegerChild(options, "N");
+  unsigned int p = (unsigned int)jsvObjectGetIntegerChild(options, "P");
+  unsigned int q = (unsigned int)jsvObjectGetIntegerChild(options, "Q");
   if (!IS_RCC_PLLM_VALUE(m)) {
     jsExceptionHere(JSET_ERROR, "Invalid PLL M value %d", m);
     return 0;

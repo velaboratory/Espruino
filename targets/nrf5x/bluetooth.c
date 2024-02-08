@@ -119,7 +119,9 @@ __ALIGN(4) static ble_gap_lesc_dhkey_t m_lesc_dhkey;   /**< LESC ECC DH Key*/
 #define MAX_CONN_PARAMS_UPDATE_COUNT    3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
 #endif
 #define CONN_SUP_TIMEOUT                MSEC_TO_UNITS(4000, UNIT_10_MS) /**< Connection Supervision Timeout in 10 ms units, see @ref BLE_GAP_CP_LIMITS.*/
-#define SLAVE_LATENCY                   0 /**< Slave Latency in number of connection events, see @ref BLE_GAP_CP_LIMITS.*/
+// Slave latency - the number of missed responses to BLE requests we're happy to put up with - see BLE_GAP_CP_LIMITS
+#define SLAVE_LATENCY                   0        // latency for *us* - we want to respond on every event
+#define SLAVE_LATENCY_CENTRAL           2        // when connecting to something else, be willing to put up with some lack of response
 
 #if NRF_BLE_MAX_MTU_SIZE != GATT_MTU_SIZE_DEFAULT
 #define EXTENSIBLE_MTU // The MTU can be extended past the default of 23
@@ -2071,8 +2073,8 @@ static ble_gap_sec_params_t get_gap_sec_params() {
 
   JsVar *options = jsvObjectGetChildIfExists(execInfo.hiddenRoot, BLE_NAME_SECURITY);
   if (jsvIsObject(options)) {
-    bool display = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "display"));
-    bool keyboard = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "keyboard"));
+    bool display = jsvObjectGetBoolChild(options, "display");
+    bool keyboard = jsvObjectGetBoolChild(options, "keyboard");
     if (display && keyboard) sec_param.io_caps = BLE_GAP_IO_CAPS_KEYBOARD_DISPLAY;
     else if (display) sec_param.io_caps = BLE_GAP_IO_CAPS_DISPLAY_ONLY;
     else if (keyboard) sec_param.io_caps = BLE_GAP_IO_CAPS_KEYBOARD_ONLY;
@@ -2080,9 +2082,9 @@ static ble_gap_sec_params_t get_gap_sec_params() {
     v = jsvObjectGetChildIfExists(options, "bond");
     if (!jsvIsUndefined(v) && !jsvGetBool(v)) sec_param.bond=0;
     jsvUnLock(v);
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "mitm"))) sec_param.mitm=1;
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "lesc"))) sec_param.lesc=1;
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "oob"))) sec_param.oob=1;
+    if (jsvObjectGetBoolChild(options, "mitm")) sec_param.mitm=1;
+    if (jsvObjectGetBoolChild(options, "lesc")) sec_param.lesc=1;
+    if (jsvObjectGetBoolChild(options, "oob")) sec_param.oob=1;
   }
   return sec_param;
 }
@@ -2158,7 +2160,7 @@ void jsble_update_security() {
   JsVar *options = jsvObjectGetChildIfExists(execInfo.hiddenRoot, BLE_NAME_SECURITY);
   if (jsvIsObject(options)) {
     JsVar *v;
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "encryptUart")))
+    if (jsvObjectGetBoolChild(options, "encryptUart"))
       encryptUart = true;
     {
       JsVar *pair;
@@ -2524,12 +2526,12 @@ static void ble_stack_init() {
         .source        = NRF_CLOCK_LF_SRC_XTAL,
         .rc_ctiv       = 0,
         .rc_temp_ctiv  = 0,
-        .xtal_accuracy = NRF_CLOCK_LF_XTAL_ACCURACY_20_PPM,
+        .xtal_accuracy = NRF_CLOCK_LF_XTAL_ACCURACY_50_PPM,
 #else
         .source        = NRF_CLOCK_LF_SRC_RC,
         .rc_ctiv       = 16, // recommended for nRF52
         .rc_temp_ctiv  = 2,  // recommended for nRF52
-        .xtal_accuracy = 0
+        .xtal_accuracy = 0 // NRF_CLOCK_LF_ACCURACY_250_PPM
 #endif
     };
 
@@ -2615,6 +2617,10 @@ static void ble_stack_init() {
 #if defined(PUCKJS) || defined(RUUVITAG) || defined(ESPR_DCDC_ENABLE)
     // can only be enabled if we're sure we have a DC-DC
     err_code = sd_power_dcdc_mode_set(NRF_POWER_DCDC_ENABLE);
+    APP_ERROR_CHECK(err_code);
+#endif
+#if defined(ESPR_DCDC_HV_ENABLE)
+    err_code = sd_power_dcdc0_mode_set(NRF_POWER_DCDC_ENABLE);
     APP_ERROR_CHECK(err_code);
 #endif
 #ifdef DEBUG
@@ -2769,7 +2775,7 @@ uint32_t jsble_advertising_start() {
     // the default...
     adv_params.properties.type = non_connectable
           ? (non_scannable ? BLE_GAP_ADV_TYPE_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED : BLE_GAP_ADV_TYPE_NONCONNECTABLE_SCANNABLE_UNDIRECTED)
-          : (non_scannable ? BLE_GAP_ADV_TYPE_EXTENDED_CONNECTABLE_NONSCANNABLE_UNDIRECTED/*experimental*/ : BLE_GAP_ADV_TYPE_CONNECTABLE_SCANNABLE_UNDIRECTED);
+          : (non_scannable ? BLE_GAP_ADV_TYPE_CONNECTABLE_NONSCANNABLE_DIRECTED : BLE_GAP_ADV_TYPE_CONNECTABLE_SCANNABLE_UNDIRECTED);
   } else { // coded/2mbps - force use of extended advertising
     adv_params.properties.type = non_connectable
         ? (non_scannable ? BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_NONSCANNABLE_UNDIRECTED : BLE_GAP_ADV_TYPE_EXTENDED_NONCONNECTABLE_SCANNABLE_UNDIRECTED)
@@ -2979,9 +2985,9 @@ uint32_t jsble_set_scanning(bool enabled, JsVar *options) {
     m_scan_param.timeout      = 0x0000;       // No timeout - BLE_GAP_SCAN_TIMEOUT_UNLIMITED
 
     if (jsvIsObject(options)) {
-      m_scan_param.active = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "active")); // Active scanning set.
+      m_scan_param.active = jsvObjectGetBoolChild(options, "active"); // Active scanning set.
 #if NRF_SD_BLE_API_VERSION>5
-      if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(options, "extended")))
+      if (jsvObjectGetBoolChild(options, "extended"))
         m_scan_param.extended = 1;
       JsVar *advPhy = jsvObjectGetChildIfExists(options, "phy");
       if (jsvIsUndefined(advPhy) || jsvIsStringEqual(advPhy,"1mbps")) {
@@ -3048,17 +3054,17 @@ uint32_t jsble_set_central_rssi_scan(uint16_t central_conn_handle, bool enabled)
 
 /** Sets security mode for a characteristic configuration */
 void set_security_mode(ble_gap_conn_sec_mode_t *perm, JsVar *configVar) {
-  if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(configVar, "signed"))) {
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(configVar, "mitm"))) {
+  if (jsvObjectGetBoolChild(configVar, "signed")) {
+    if (jsvObjectGetBoolChild(configVar, "mitm")) {
       BLE_GAP_CONN_SEC_MODE_SET_SIGNED_WITH_MITM(perm);
     } else {
       BLE_GAP_CONN_SEC_MODE_SET_SIGNED_NO_MITM(perm);
     }
   } else {
-    if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(configVar, "lesc"))) {
+    if (jsvObjectGetBoolChild(configVar, "lesc")) {
       BLE_GAP_CONN_SEC_MODE_SET_LESC_ENC_WITH_MITM(perm);
-    } else if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(configVar, "encrypted"))) {
-      if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(configVar, "mitm"))) {
+    } else if (jsvObjectGetBoolChild(configVar, "encrypted")) {
+      if (jsvObjectGetBoolChild(configVar, "mitm")) {
         BLE_GAP_CONN_SEC_MODE_SET_ENC_WITH_MITM(perm);
       } else {
         BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(perm);
@@ -3116,15 +3122,15 @@ void jsble_set_services(JsVar *data) {
         JsVar *charVar = jsvObjectIteratorGetValue(&serviceit);
 
         memset(&char_md, 0, sizeof(char_md));
-        if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "broadcast")))
+        if (jsvObjectGetBoolChild(charVar, "broadcast"))
           char_md.char_props.broadcast = 1;
-        if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "notify")))
+        if (jsvObjectGetBoolChild(charVar, "notify"))
           char_md.char_props.notify = 1;
-        if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "indicate")))
+        if (jsvObjectGetBoolChild(charVar, "indicate"))
           char_md.char_props.indicate = 1;
-        if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "readable")))
+        if (jsvObjectGetBoolChild(charVar, "readable"))
           char_md.char_props.read = 1;
-        if (jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(charVar, "writable"))) {
+        if (jsvObjectGetBoolChild(charVar, "writable")) {
           char_md.char_props.write = 1;
           char_md.char_props.write_wo_resp = 1;
         }
@@ -3174,7 +3180,7 @@ void jsble_set_services(JsVar *data) {
         attr_char_value.init_len     = 0;
         attr_char_value.init_offs    = 0;
         attr_char_value.p_value      = 0;
-        attr_char_value.max_len      = (uint16_t)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(charVar, "maxLen"));
+        attr_char_value.max_len      = (uint16_t)jsvObjectGetIntegerChild(charVar, "maxLen");
         if (attr_char_value.max_len==0) attr_char_value.max_len=1;
 
         // get initial data
@@ -3434,16 +3440,25 @@ void jsble_central_connect(ble_gap_addr_t peer_addr, JsVar *options) {
     gap_conn_params.min_conn_interval = MSEC_TO_UNITS(20, UNIT_1_25_MS);   // Minimum acceptable connection interval (20 ms)
     gap_conn_params.max_conn_interval = MSEC_TO_UNITS(200, UNIT_1_25_MS);    // Maximum acceptable connection interval (200 ms)
   }
-  gap_conn_params.slave_latency     = SLAVE_LATENCY;
+  gap_conn_params.slave_latency     = SLAVE_LATENCY_CENTRAL;
   gap_conn_params.conn_sup_timeout  = CONN_SUP_TIMEOUT;
   // handle options
   if (jsvIsObject(options)) {
     JsVarFloat v;
-    v = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(options,"minInterval"));
+    v = jsvObjectGetFloatChild(options,"minInterval");
     if (!isnan(v)) gap_conn_params.min_conn_interval = (uint16_t)(MSEC_TO_UNITS(v, UNIT_1_25_MS)+0.5);
-    v = jsvGetFloatAndUnLock(jsvObjectGetChildIfExists(options,"maxInterval"));
+    v = jsvObjectGetFloatChild(options,"maxInterval");
     if (!isnan(v)) gap_conn_params.max_conn_interval = (uint16_t)(MSEC_TO_UNITS(v, UNIT_1_25_MS)+0.5);
   }
+  /* From NRF SDK: If both conn_sup_timeout and max_conn_interval are specified, then the following constraint applies:
+     conn_sup_timeout * 4 > (1 + slave_latency) * max_conn_interval
+     that corresponds to the following Bluetooth Spec requirement:
+     The Supervision_Timeout in milliseconds shall be larger than
+     (1 + Conn_Latency) * Conn_Interval_Max * 2, where Conn_Interval_Max is given in milliseconds.
+  */
+  unsigned int minSupTimeout = (((1+gap_conn_params.slave_latency) * gap_conn_params.max_conn_interval) + 4) >> 2; // round up (ceil)
+  if (gap_conn_params.conn_sup_timeout < minSupTimeout)
+    gap_conn_params.conn_sup_timeout = minSupTimeout;
 
   ble_gap_addr_t addr;
   addr = peer_addr;
@@ -3492,8 +3507,8 @@ void jsble_central_getCharacteristics(uint16_t central_conn_handle, JsVar *servi
 
   bleUUIDFilter = uuid;
   ble_gattc_handle_range_t range;
-  range.start_handle = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(service, "start_handle"));
-  range.end_handle = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(service, "end_handle"));
+  range.start_handle = jsvObjectGetIntegerChild(service, "start_handle");
+  range.end_handle = jsvObjectGetIntegerChild(service, "end_handle");
   bleFinalHandle = range.end_handle;
 
   uint32_t              err_code;
@@ -3509,11 +3524,11 @@ void jsble_central_characteristicWrite(uint16_t central_conn_handle, JsVar *char
   if (central_conn_handle == BLE_CONN_HANDLE_INVALID)
     return bleCompleteTaskFailAndUnLock(BLETASK_CHARACTERISTIC_WRITE, jsvNewFromString("Not connected"));
 
-  uint16_t handle = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(characteristic, "handle_value"));
+  uint16_t handle = jsvObjectGetIntegerChild(characteristic, "handle_value");
   bool writeWithoutResponse = false;
   JsVar *properties = jsvObjectGetChildIfExists(characteristic, "properties");
   if (properties) {
-    writeWithoutResponse = jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(properties, "writeWithoutResponse"));
+    writeWithoutResponse = jsvObjectGetBoolChild(properties, "writeWithoutResponse");
     jsvUnLock(properties);
   }
 
@@ -3546,7 +3561,7 @@ void jsble_central_characteristicRead(uint16_t central_conn_handle, JsVar *chara
   if (central_conn_handle == BLE_CONN_HANDLE_INVALID)
     return bleCompleteTaskFailAndUnLock(BLETASK_CHARACTERISTIC_READ, jsvNewFromString("Not connected"));
 
-  uint16_t handle = jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(characteristic, "handle_value"));
+  uint16_t handle = jsvObjectGetIntegerChild(characteristic, "handle_value");
   uint32_t              err_code;
   err_code = sd_ble_gattc_read(central_conn_handle, handle, 0/*offset*/);
   JsVar *errStr = jsble_get_error_string(err_code);
@@ -3561,7 +3576,7 @@ void jsble_central_characteristicDescDiscover(uint16_t central_conn_handle, JsVa
     return bleCompleteTaskFailAndUnLock(BLETASK_CHARACTERISTIC_DESC_AND_STARTNOTIFY, jsvNewFromString("Not connected"));
 
   // start discovery for our single handle only
-  uint16_t handle_value = (uint16_t)jsvGetIntegerAndUnLock(jsvObjectGetChildIfExists(characteristic, "handle_value"));
+  uint16_t handle_value = (uint16_t)jsvObjectGetIntegerChild(characteristic, "handle_value");
 
   ble_gattc_handle_range_t range;
   range.start_handle = handle_value+1;
@@ -3591,10 +3606,10 @@ void jsble_central_characteristicNotify(uint16_t central_conn_handle, JsVar *cha
 
   if (enable) {
     JsVar *properties = jsvObjectGetChildIfExists(characteristic,"properties");
-    if (properties && jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(properties,"notify"))) {
+    if (properties && jsvObjectGetBoolChild(properties,"notify")) {
       // use notification if it exists
       buf[0] = BLE_GATT_HVX_NOTIFICATION;
-    } else if (properties && jsvGetBoolAndUnLock(jsvObjectGetChildIfExists(properties,"indicate"))) {
+    } else if (properties && jsvObjectGetBoolChild(properties,"indicate")) {
       // otherwise default to indication
       buf[0] = BLE_GATT_HVX_INDICATION;
     } else {

@@ -196,6 +196,7 @@ int nativeCallGetCType() {
     if (strcmp(name,"bool")==0) t=JSWAT_BOOL;
     if (strcmp(name,"Pin")==0) t=JSWAT_PIN;
     if (strcmp(name,"JsVar")==0) t=JSWAT_JSVAR;
+    if (strcmp(name,"float")==0) t=JSWAT_FLOAT32;
     jslMatch(LEX_ID);
     return t;
   }
@@ -210,14 +211,14 @@ int nativeCallGetCType() {
   "generate" : "jswrap_espruino_nativeCall",
   "params" : [
     ["addr","int","The address in memory of the function (or offset in `data` if it was supplied"],
-    ["sig","JsVar","The signature of the call, `returnType (arg1,arg2,...)`. Allowed types are `void`,`bool`,`int`,`double`,`Pin`,`JsVar`"],
+    ["sig","JsVar","The signature of the call, `returnType (arg1,arg2,...)`. Allowed types are `void`,`bool`,`int`,`double`,`float`,`Pin`,`JsVar`"],
     ["data","JsVar","(Optional) A string containing the function itself. If not supplied then 'addr' is used as an absolute address."]
   ],
   "return" : ["JsVar","The native function"],
   "typescript" : "nativeCall(addr: number, sig: string, data?: string): any;"
 }
-ADVANCED: This is a great way to crash Espruino if you're not sure what you are
-doing
+ADVANCED: It's very easy to crash Espruino using this function if
+you get the code/arguments you supply wrong!
 
 Create a native function that executes the code at the given address, e.g.
 `E.nativeCall(0x08012345,'double (double,double)')(1.1, 2.2)`
@@ -226,11 +227,21 @@ If you're executing a thumb function, you'll almost certainly need to set the
 bottom bit of the address to 1.
 
 Note it's not guaranteed that the call signature you provide can be used - there
-are limits on the number of arguments allowed.
+are limits on the number of arguments allowed (5).
 
 When supplying `data`, if it is a 'flat string' then it will be used directly,
 otherwise it'll be converted to a flat string and used.
- */
+
+The argument types in `sig` are:
+
+* `void` - returns nothing
+* `bool` -  boolean value
+* `int` - 32 bit integer
+* `double` - 64 bit floating point
+* `float` - 32 bit floating point (2v21 and later)
+* `Pin` - Espruino 'pin' value (8 bit integer)
+* `JsVar` - Pointer to an Espruino JsVar structure
+*/
 JsVar *jswrap_espruino_nativeCall(JsVarInt addr, JsVar *signature, JsVar *data) {
   unsigned int argTypes = 0;
   if (jsvIsUndefined(signature)) {
@@ -669,13 +680,13 @@ void jswrap_espruino_kickWatchdog() {
 JsVar *jswrap_espruino_getErrorFlagArray(JsErrorFlags flags) {
   JsVar *arr = jsvNewEmptyArray();
   if (!arr) return 0;
-  if (flags&JSERR_RX_FIFO_FULL) jsvArrayPushAndUnLock(arr, jsvNewFromString("FIFO_FULL"));
-  if (flags&JSERR_BUFFER_FULL) jsvArrayPushAndUnLock(arr, jsvNewFromString("BUFFER_FULL"));
-  if (flags&JSERR_CALLBACK) jsvArrayPushAndUnLock(arr, jsvNewFromString("CALLBACK"));
-  if (flags&JSERR_LOW_MEMORY) jsvArrayPushAndUnLock(arr, jsvNewFromString("LOW_MEMORY"));
-  if (flags&JSERR_MEMORY) jsvArrayPushAndUnLock(arr, jsvNewFromString("MEMORY"));
-  if (flags&JSERR_MEMORY_BUSY) jsvArrayPushAndUnLock(arr, jsvNewFromString("MEMORY_BUSY"));
-  if (flags&JSERR_UART_OVERFLOW) jsvArrayPushAndUnLock(arr, jsvNewFromString("UART_OVERFLOW"));
+  if (flags&JSERR_RX_FIFO_FULL) jsvArrayPushString(arr, "FIFO_FULL");
+  if (flags&JSERR_BUFFER_FULL) jsvArrayPushString(arr, "BUFFER_FULL");
+  if (flags&JSERR_CALLBACK) jsvArrayPushString(arr, "CALLBACK");
+  if (flags&JSERR_LOW_MEMORY) jsvArrayPushString(arr, "LOW_MEMORY");
+  if (flags&JSERR_MEMORY) jsvArrayPushString(arr, "MEMORY");
+  if (flags&JSERR_MEMORY_BUSY) jsvArrayPushString(arr, "MEMORY_BUSY");
+  if (flags&JSERR_UART_OVERFLOW) jsvArrayPushString(arr, "UART_OVERFLOW");
 
   return arr;
 }
@@ -1168,16 +1179,15 @@ JsVar *jswrap_espruino_toJS(JsVar *v) {
   "return" : ["JsVar","A String"],
   "return_object" : "String"
 }
-This creates and returns a special type of string, which actually references a
-specific memory address. It can be used in order to use sections of Flash memory
-directly in Espruino (for example to execute code straight from flash memory
-with `eval(E.memoryArea( ... ))`)
+This creates and returns a special type of string, which references a
+specific address in memory. It can be used in order to use sections of
+Flash memory directly in Espruino (for example `Storage` uses it
+to allow files to be read directly from Flash).
 
-**Note:** This is only tested on STM32-based platforms (Espruino Original and
-Espruino Pico) at the moment.
+**Note:** As of 2v21, Calling `E.memoryArea` with an address of 0 will return `undefined`
 */
 JsVar *jswrap_espruino_memoryArea(int addr, int len) {
-  if (len<0) return 0;
+  if (!addr || len<0) return 0;
   // hack for ESP8266/ESP32 where the address can be different
   size_t mappedAddr = jshFlashGetMemMapAddress((size_t)addr);
   return jsvNewNativeString((char*)mappedAddr, (size_t)len);
@@ -1751,7 +1761,7 @@ void jswrap_espruino_mapInPlace(JsVar *from, JsVar *to, JsVar *map, JsVarInt bit
         assert(jsvIsArrayBuffer(map));
         v2 = jsvArrayBufferGet(map, (size_t)v);
       }
-      jsvArrayBufferIteratorSetValue(&itTo, v2);
+      jsvArrayBufferIteratorSetValue(&itTo, v2, false/*little endian*/);
       jsvUnLock(v2);
     } else { // no map - push right through
       jsvArrayBufferIteratorSetIntegerValue(&itTo, v);
@@ -2015,13 +2025,18 @@ Set the time zone to be used with `Date` objects.
 
 For example `E.setTimeZone(1)` will be GMT+0100
 
-Note that `E.setTimeZone()` will have no effect when daylight savings time rules
-have been set with `E.setDST()`. The timezone value will be stored, but never
-used so long as DST settings are in effect.
-
 Time can be set with `setTime`.
+
+**Note:** If daylight savings time rules have been set with `E.setDST()`,
+calling `E.setTimeZone()` will remove them and move back to using a static
+timezone that doesn't change based on the time of year.
+
 */
 void jswrap_espruino_setTimeZone(JsVarFloat zone) {
+#ifndef ESPR_NO_DAYLIGHT_SAVING
+  jswrap_espruino_setDST(0); // disable DST
+#endif
+  // update the timezone var
   jsvObjectSetChildAndUnLock(execInfo.hiddenRoot, JS_TIMEZONE_VAR,
       jsvNewFromInteger((int)(zone*60)));
 }
@@ -2034,7 +2049,7 @@ void jswrap_espruino_setTimeZone(JsVarFloat zone) {
   "name" : "setDST",
   "generate" : "jswrap_espruino_setDST",
   "params" : [
-      ["params","JsVarArray","An array containing the settings for DST"]
+      ["params","JsVarArray","An array containing the settings for DST, or `undefined` to disable"]
   ],
   "typescript" : "setDST(dstOffset: number, timezone: number, startDowNumber: number, startDow: number, startMonth: number, startDayOffset: number, startTimeOfDay: number, endDowNumber: number, endDow: number, endMonth: number, endDayOffset: number, endTimeOfDay: number): void"
 }
@@ -2080,12 +2095,34 @@ winter (EET) and 3 hours in summer (EEST). DST starts at 03:00 EET on the last
 Sunday in March, and ends at 04:00 EEST on the last Sunday in October. So
 someone in Ukraine might call `E.setDST(60,120,4,0,2,0,180,4,0,9,0,240);`
 
-Note that when DST parameters are set (i.e. when `dstOffset` is not zero),
-`E.setTimeZone()` has no effect.
+Examples:
+
+```
+// United Kingdom
+E.setDST(60,0,4,0,2,0,60,4,0,9,0,120);
+// California, USA
+E.setDST(60,-480,1,0,2,0,120,0,0,10,0,120);
+// Or adjust -480 (-8 hours) for other US states
+// Ukraine
+E.setDST(60,120,4,0,2,0,180,4,0,9,0,240);
+```
+
+**Note:** This is not compatible with `E.setTimeZone()`. Calling `E.setTimeZone()`
+after this will disable DST.
+
 */
 void jswrap_espruino_setDST(JsVar *params) {
-  if (!jsvIsArray(params)) return;
-  if (jsvGetLength(params) != 12) return;
+  if (jsvIsUndefined(params)) {
+    jsvObjectRemoveChild(execInfo.hiddenRoot, JS_DST_SETTINGS_VAR);
+    return;
+  }
+  if (!jsvIsArray(params) || jsvGetLength(params) != 12) {
+    jsExceptionHere(JSET_ERROR, "Unexpected arguments");
+    return;
+  }
+  // remove timezone var
+  jsvObjectRemoveChild(execInfo.hiddenRoot, JS_TIMEZONE_VAR);
+  // write DST var
   JsVar *dst = jswrap_typedarray_constructor(ARRAYBUFFERVIEW_INT16, params, 0, 0);
   jsvObjectSetChildAndUnLock(execInfo.hiddenRoot, JS_DST_SETTINGS_VAR, dst);
 }

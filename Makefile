@@ -286,6 +286,7 @@ src/jswrap_promise.c \
 src/jswrap_serial.c \
 src/jswrap_storage.c \
 src/jswrap_spi_i2c.c \
+src/jswrap_stepper.c \
 src/jswrap_stream.c \
 src/jswrap_waveform.c 
 endif
@@ -787,7 +788,7 @@ endif
 
 docs:
 	@echo ================================== Generating Board docs
-	$(Q)python2.7 scripts/build_docs.py $(WRAPPERSOURCES) $(DEFINES) -B$(BOARD)
+	$(Q)python scripts/build_docs.py $(WRAPPERSOURCES) $(DEFINES) -B$(BOARD)
 	@echo functions.html created
 
 $(WRAPPERFILE): scripts/build_jswrapper.py $(WRAPPERSOURCES)
