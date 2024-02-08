@@ -78,6 +78,9 @@
 #include "hrm_vc31.h" // for Bangle.setOptions
 #endif
 
+#include "jswrap_vel.h"
+#include "jswrap_heartrate_collections.h"
+
 /*TYPESCRIPT
 declare const BTN1: Pin;
 declare const BTN2: Pin;
@@ -333,7 +336,7 @@ To get this event you must turn the heart rate monitor on with
   "name" : "HRM-raw",
   "params" : [["hrm","JsVar","A object containing instant readings from the heart rate sensor"]],
   "ifdef" : "BANGLEJS",
-  "typescript" : "on(event: \"HRM-raw\", callback: (hrm: { raw: number, filt: number, bpm: number, confidence: number, lastPPGTime: number, timeDiff: number }) => void): void;"
+  "typescript" : "on(event: \"HRM-raw\", callback: (hrm: { raw: number, filt: number, bpm: number, confidence: number }) => void): void;"
 }
 Called when heart rate sensor data is available - see `Bangle.setHRMPower(1)`.
 
@@ -563,21 +566,6 @@ Emitted at midnight (at the point the `day` health info is reset to 0).
 
 Can be used for housekeeping tasks that don't want to be run during the day.
 */
-/*JSON{
-  "type" : "event",
-  "class" : "Bangle",
-  "name" : "accelCalc",
-  "params" : [["data","JsVar",""]],
-  "ifdef" : "BANGLEJS",
-  "typescript": "on(event: \"accelCalc\", callback: (data: AccelCalcData) => void): void;"
-}
-Accelerometer sample data is available with `{accelSampleData, accumulatedMovement, accumulatedJitter}` object as a parameter.
-
-* `accelSampleData` contains current time, number of samples, and the total jitter and movement.
-* `accumulatedMovement` sum of all accelDiff of all samples
-* `accumulatedJitter` absolute value of a sample's difference and it's previous difference differences
-
- */
 
 #define ACCEL_HISTORY_LEN 50 ///< Number of samples of accelerometer history
 
@@ -872,22 +860,6 @@ Vector3 acc;
 int accMagSquared;
 /// magnitude of difference in accelerometer vectors since last reading
 unsigned int accDiff;
-
-//buffer to hold accelerometer log data
-uint32_t accelSampleData[5];
-//accumulated movement(calculated by adding the differences of each sample)
-uint32_t accumulatedMovement = 0;
-//accumulated jitter(calcuated by adding the differences of accDiff's between samples)
-uint32_t accumulatedJitter = 0;
-//number of samples collected
-uint32_t numSamples = 0;
-//time from last sample(collecting acc data for some amount of time)
-uint64_t lastSampleTime = 0;
-//time of current Sample
-uint64_t currentTime = 0;
-//difference from the last reading
-uint32_t lastAccDiff = 0;
-
 
 /// History of accelerometer readings
 int8_t accHistory[ACCEL_HISTORY_LEN*3];
@@ -1523,40 +1495,6 @@ void peripheralPollHandler() {
     acc.z = newz;
     accMagSquared = acc.x*acc.x + acc.y*acc.y + acc.z*acc.z;
     accDiff = int_sqrt32(dx*dx + dy*dy + dz*dz);
-    
-    //collect sample and store into buffer
-    currentTime = jshGetSystemTime();
-    numSamples++;
-    accumulatedJitter += abs(accDiff - lastAccDiff);
-    accumulatedMovement += accDiff; 
-    lastAccDiff = accDiff;
-    if (jshGetMillisecondsFromTime(currentTime - lastSampleTime) >= 60000) { 
-      JsVar *bangle = jsvObjectGetChildIfExists(execInfo.root, "Bangle");
-      if(bangle){
-        lastSampleTime = currentTime;
-        accelSampleData[0] = jshGetMillisecondsFromTime(currentTime) / 1000;
-        accelSampleData[1] = accumulatedMovement;
-        accelSampleData[2] = numSamples;
-        accelSampleData[3] = accumulatedJitter;
-        accelSampleData[4] = 0; //cleans out the junk data in the last two bits
-
-        JsVar *o = jsvNewObject();
-        if(o){
-          jsvObjectSetChildAndUnLock(o, "accelSampleData", jsvNewArrayBufferWithData(18, accelSampleData));
-          jsvObjectSetChildAndUnLock(o, "accumulatedMovement", jsvNewFromInteger(accumulatedMovement));
-          jsvObjectSetChildAndUnLock(o, "accumulatedJitter", jsvNewFromInteger(accumulatedJitter));
-          jsvObjectSetChildAndUnLock(o, "systemTime", jsvNewFromFloat(jshGetMillisecondsFromTime(currentTime)));
-        }
-        jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"accelCalc", &o, 1);
-        jsvUnLock(o);
-        jshHadEvent();
-
-        accumulatedMovement = 0;
-        accumulatedJitter = 0;
-        numSamples = 0;
-      }
-      jsvUnLock(bangle);
-    }
     // save history
     accHistoryIdx = (accHistoryIdx+3) % sizeof(accHistory);
     accHistory[accHistoryIdx  ] = clipi8(newx>>7);
@@ -3991,7 +3929,8 @@ NO_INLINE void jswrap_banglejs_init() {
     jswrap_banglejs_accelWr(0x24,3); // TDTRC Tap detect enable
     jswrap_banglejs_accelWr(0x25, 0x78); // TDTC Tap detect double tap (0x78 default)
     jswrap_banglejs_accelWr(0x26, 0xCB); // TTH Tap detect threshold high (0xCB default)
-    jswrap_banglejs_accelWr(0x27, 0x1A); // TTL Tap detect threshold low (0x1A default)
+    jswrap_banglejs_accelWr(0x27, 0x25); // TTL Tap detect threshold low (0x1A default)
+    // setting TTL=0x1A means that when the HRM is on, interference sometimes means a spurious tap is detected! https://forum.espruino.com/conversations/390041
     jswrap_banglejs_accelWr(0x30,1); // ATH low wakeup detect threshold
     //jswrap_banglejs_accelWr(0x35,0 << 4); // LP_CNTL no averaging of samples
     jswrap_banglejs_accelWr(0x35,2 << 4); // LP_CNTL 4x averaging of samples
@@ -4241,6 +4180,7 @@ void jswrap_banglejs_kill() {
   "generate" : "jswrap_banglejs_idle"
 }*/
 bool jswrap_banglejs_idle() {
+  velPollHandler();
   JsVar *bangle =jsvObjectGetChildIfExists(execInfo.root, "Bangle");
   /* Check if we have an accelerometer listener, and set JSBF_ACCEL_LISTENER
    * accordingly - so we don't get a wakeup if we have no listener. */
@@ -4382,8 +4322,6 @@ bool jswrap_banglejs_idle() {
         jsvObjectSetChildAndUnLock(o,"confidence",jsvNewFromInteger(hrmInfo.confidence));
         jsvObjectSetChildAndUnLock(o,"filt",jsvNewFromInteger(hrmInfo.filtered));
         jsvObjectSetChildAndUnLock(o,"avg",jsvNewFromInteger(hrmInfo.avg));
-        jsvObjectSetChildAndUnLock(o,"lastPPGTime",jsvNewFromInteger(hrmInfo.lastPPGTime));
-        jsvObjectSetChildAndUnLock(o,"timeDiff",jsvNewFromInteger(hrmInfo.timeDiff));
         hrm_get_hrm_raw_info(o);
         jsiQueueObjectCallbacks(bangle, JS_EVENT_PREFIX"HRM-raw", &o, 1);
         jsvUnLock(o);

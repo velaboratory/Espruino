@@ -22,6 +22,7 @@
 #include "jshardware.h"
 #include "jsinteractive.h"
 #include "vc31_binary/algo.h"
+#include "jswrap_heartrate_collections.h"
 
 HrmInfo hrmInfo;
 
@@ -38,7 +39,6 @@ bool hrm_new(int ppgValue, Vector3 *acc) {
   // work out time passed since last sample (it might not be exactly hrmUpdateInterval)
   JsSysTime time = jshGetSystemTime();
   int timeDiff = (int)(jshGetMillisecondsFromTime(time-hrmInfo.lastPPGTime)+0.5);
-  hrmInfo.timeDiff = timeDiff;
   hrmInfo.lastPPGTime = time;
   // if we've just started wearing again, reset the algorithm
   if (vcInfo.isWearing && !hrmInfo.isWorn) {
@@ -61,6 +61,9 @@ bool hrm_new(int ppgValue, Vector3 *acc) {
   if (ppgValue<HRMVALUE_MIN) ppgValue=HRMVALUE_MIN;
   if (ppgValue>HRMVALUE_MAX) ppgValue=HRMVALUE_MAX;
   hrmInfo.raw = ppgValue;
+
+  collect_heartrate_samples();
+  
   // Feed data into algorithm
   AlgoInputData_t inputData;
   inputData.axes.x = acc->y >> 5;  // perpendicular to the direction of the arm

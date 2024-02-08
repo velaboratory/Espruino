@@ -184,7 +184,10 @@ ifeq ($(BOARD),RASPBERRYPI)
  $(info *************************************************************)
  endif
 endif
-
+INCLUDE += -I$(ROOT)/libs/velaboratory/examples
+WRAPPERSOURCES += $(wildcard libs/velaboratory/examples/*.c)
+INCLUDE += -I$(ROOT)/libs/velaboratory
+WRAPPERSOURCES += $(wildcard libs/velaboratory/*.c)
 # ---------------------------------------------------------------------------------
 #                                                      Get info out of BOARDNAME.py
 # ---------------------------------------------------------------------------------
@@ -268,7 +271,6 @@ src/jswrap_regexp.c \
 src/jswrap_string.c \
 src/jswrap_modules.c \
 src/jswrap_math.c
-
 
 ifndef ESPR_EMBED # These are wrapper sources to do with hardware, if embedding we don't need these
 WRAPPERSOURCES += \
